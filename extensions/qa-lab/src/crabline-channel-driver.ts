@@ -1,4 +1,4 @@
-// Qa Lab plugin module models Crabline local mock channel-driver metadata.
+// Qa Lab plugin module models Crabline channel-driver metadata.
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -232,7 +232,7 @@ async function runCrablineJsonCommand(params: {
   }
 }
 
-function readCrablineSupportedChannels(payload: unknown): QaCrablineChannelId[] {
+function parseCrablineProviderCatalogChannels(payload: unknown): QaCrablineChannelId[] {
   const support = (payload as { support?: unknown }).support;
   if (!Array.isArray(support)) {
     throw new Error("Crabline providers output did not include a support catalog.");
@@ -280,7 +280,7 @@ async function readSupportedCrablineChannels(
             manifestPath,
           ).catalog,
         };
-    const supportedChannels = readCrablineSupportedChannels(providers);
+    const supportedChannels = parseCrablineProviderCatalogChannels(providers);
     if (supportedChannels.length === 0) {
       throw new Error("Crabline did not report any ready channel providers.");
     }
@@ -306,8 +306,8 @@ export async function runQaCrablineChannelDriverSmoke(
     const registry = runtime.createRegistry(manifest, manifestPath);
     const fixtureId = `qa-crabline-${selection.channel}`;
     const provider = registry.resolve(selection.channel, fixtureId);
-    const fixture = manifest.fixtures[0]!;
-    const config = manifest.providers[selection.channel]!;
+    const fixture = manifest.fixtures[0];
+    const config = manifest.providers[selection.channel];
     try {
       const probe = await provider.probe({
         config,
@@ -376,6 +376,6 @@ export function createQaCrablineChannelReportNotes(
     `Channel driver: ${selection.channelDriver} for ${selection.channel}.`,
     `Channel capability matrix: ${selection.capabilityMatrixPath}.`,
     `Channel driver smoke: ${selection.smokeArtifactPath}.`,
-    "This is the openclaw/crabline local mock messaging-provider path; it is independent of the Canonical Multipass VM runner.",
+    "This is the openclaw/crabline channel-provider path; it is independent of the Canonical Multipass VM runner.",
   ];
 }
