@@ -224,14 +224,17 @@ public enum GatewayTLSServerTrust {
                     port: port),
                 enforcedFingerprint: enforcedFingerprint)
         }
-        // Only explicitly approved, currently hostname-trusted leaves can cross a pin mismatch.
+        // Check durable approval even when the leaf matches this session's last accepted pin:
+        // Forget or an explicit pin reset must retire it on the next TLS handshake.
         // Setup/configured pins and clients that do not opt in remain single-leaf strict.
-        if params.allowsApprovedAlternates, systemTrustOk,
-           let expected, let fingerprint, let storeKey = params.storeKey,
-           GatewayTLSStore.acceptsApprovedAlternate(
-               fingerprint, expectedFingerprint: expected, stableID: storeKey)
-        {
-            return .accept(fingerprint: fingerprint, enforcePin: true)
+        if params.allowsApprovedAlternates, let expected, let fingerprint, let storeKey = params.storeKey {
+            guard let approved = GatewayTLSStore.approvedFingerprints(stableID: storeKey),
+                  approved.contains(expected), approved.contains(fingerprint)
+            else { return failure(.pinMismatch, expected, nil) }
+            if fingerprint != expected || fingerprint != approved.first {
+                guard systemTrustOk else { return failure(.untrustedCertificate, expected, nil) }
+                return .accept(fingerprint: fingerprint, enforcePin: true)
+            }
         }
         switch GatewayTLSValidationPolicy.decide(
             expectedFingerprint: expected,
@@ -424,16 +427,10 @@ public enum GatewayTLSStore {
         return self.clearSafeLegacyFingerprint(stableID: stableID)
     }
 
-    static func acceptsApprovedAlternate(
-        _ observed: String,
-        expectedFingerprint: String,
-        stableID: String) -> Bool
-    {
-        guard case let .value(current, alternates) = self.loadFingerprintResult(stableID: stableID),
-              !alternates.isEmpty
-        else { return false }
-        let approved = [current] + alternates
-        return approved.contains(expectedFingerprint) && approved.contains(observed)
+    static func approvedFingerprints(stableID: String) -> [String]? {
+        guard case let .value(current, alternates) = self.loadFingerprintResult(stableID: stableID)
+        else { return nil }
+        return [current] + alternates
     }
 
     @discardableResult

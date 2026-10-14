@@ -129,6 +129,8 @@ certificates per Gateway, so previously approved edges can reconnect without a
 repeated prompt. Retained certificates must still pass the device’s trust and
 hostname checks; new certificates always require review. Adding a setup code with
 an explicit fingerprint resets this set. **Forget Gateway** removes all approvals.
+Subsequent TLS handshakes, including reconnects from existing sessions, check the
+current saved approvals before accepting a certificate.
 
 ## Cloudflare Access sign-in
 

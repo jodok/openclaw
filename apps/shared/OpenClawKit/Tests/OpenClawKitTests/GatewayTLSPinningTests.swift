@@ -194,7 +194,19 @@ struct GatewayTLSPinningTests {
         let fingerprintA = try #require(GatewayTLSServerTrust.certificateFingerprint(trustA))
         let fingerprintB = try #require(GatewayTLSServerTrust.certificateFingerprint(trustB))
         let route = "profile:alternating"
-        try #require(GatewayTLSStore.replaceFingerprint(fingerprintA, stableID: route))
+        let account = "fingerprint.v3." + Data(route.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let existingPin: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: GatewayTLSStore.resolvedKeychainService(suffix: ".tests"),
+            kSecAttrAccount as String: account,
+            kSecValueData as String: Data(fingerprintA.utf8),
+            kSecAttrGeneric as String: Data(fingerprintA.utf8),
+        ]
+        // Stable v2026.10.3 writes a scalar v3 item without approval metadata.
+        try #require(GatewayTLSStore.keychainOperations.add(existingPin as CFDictionary) == errSecSuccess)
         func session(allowsAlternates: Bool = true, routeKey: String = route) -> GatewayTLSPinningSession {
             GatewayTLSPinningSession(params: GatewayTLSParams(
                 required: true,
@@ -231,6 +243,34 @@ struct GatewayTLSPinningTests {
         #expect(!session().validateServerTrust(trustA, for: url))
     }
 
+    @Test(arguments: [false, true])
+    func `withdrawn approvals reject a retained session pin on its next handshake`(forget: Bool) throws {
+        let trust = try gatewayTLSTestTrust(systemTrusted: true)
+        let fingerprint = try #require(GatewayTLSServerTrust.certificateFingerprint(trust))
+        let replacement = String(repeating: "b", count: 64)
+        let route = "profile:withdrawn"
+        try #require(GatewayTLSStore.replaceFingerprint(fingerprint, stableID: route))
+        try #require(GatewayTLSStore.approveFingerprint(replacement, ifCurrent: fingerprint, stableID: route))
+        let session = GatewayTLSPinningSession(params: .init(
+            required: true,
+            expectedFingerprint: replacement,
+            allowTOFU: false,
+            storeKey: route,
+            allowsApprovedAlternates: true))
+        let url = try #require(URL(string: "wss://gateway.example"))
+        try #require(session.validateServerTrust(trust, for: url))
+        let untrusted = try gatewayTLSTestTrust(systemTrusted: false)
+        #expect(!session.validateServerTrust(untrusted, for: url))
+        #expect(session.consumeLastTLSFailure()?.kind == .untrustedCertificate)
+        if forget {
+            try #require(GatewayTLSStore.clearFingerprint(stableID: route))
+        } else {
+            try #require(GatewayTLSStore.replaceFingerprint(replacement, stableID: route))
+        }
+        #expect(!session.validateServerTrust(trust, for: url))
+        #expect(session.consumeLastTLSFailure()?.kind == .pinMismatch)
+    }
+
     @Test func `approved leaves are bounded and retired by forget or older-client writes`() throws {
         let route = "profile:bounded"
         let leaves = (0..<6).map { String(repeating: String($0), count: 64) }
@@ -240,8 +280,8 @@ struct GatewayTLSPinningTests {
                 leaves[index], ifCurrent: leaves[index - 1], stableID: route))
         }
         for index in 0..<leaves.count {
-            #expect(GatewayTLSStore.acceptsApprovedAlternate(
-                leaves[index], expectedFingerprint: leaves[5], stableID: route) == (index >= 2))
+            #expect((GatewayTLSStore.approvedFingerprints(stableID: route)?.contains(leaves[index]) == true) ==
+                (index >= 2))
         }
         // Simulate a v3 client updating the scalar pin without knowing approval metadata.
         let account = "fingerprint.v3." + Data(route.utf8).base64EncodedString()
@@ -260,12 +300,10 @@ struct GatewayTLSPinningTests {
         try #require(GatewayTLSStore.keychainOperations.update(
             query as CFDictionary, olderWrite as CFDictionary) == errSecSuccess)
         #expect(GatewayTLSStore.loadFingerprint(stableID: route) == leaves[0])
-        #expect(!GatewayTLSStore.acceptsApprovedAlternate(
-            leaves[4], expectedFingerprint: leaves[0], stableID: route))
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route)?.contains(leaves[4]) == false)
         try #require(GatewayTLSStore.clearFingerprint(stableID: route))
         try #require(GatewayTLSStore.replaceFingerprint(leaves[5], stableID: route))
-        #expect(!GatewayTLSStore.acceptsApprovedAlternate(
-            leaves[4], expectedFingerprint: leaves[5], stableID: route))
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route)?.contains(leaves[4]) == false)
     }
 
     @Test func `server trust evaluator claims trusted first use`() throws {
