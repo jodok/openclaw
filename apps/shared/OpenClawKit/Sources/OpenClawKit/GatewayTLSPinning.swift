@@ -399,7 +399,8 @@ public enum GatewayTLSStore {
     {
         guard let account = self.keychainAccount(stableID: stableID),
               case let .value(current, alternates) = self.loadFingerprintResult(stableID: stableID),
-              current == self.canonicalStoredFingerprint(expectedValue)
+              current == self.canonicalStoredFingerprint(expectedValue) ||
+              (retainApprovedAlternates && alternates.contains(self.canonicalStoredFingerprint(expectedValue)))
         else { return false }
         let fingerprint = self.canonicalStoredFingerprint(value)
         let replacementData = Data(fingerprint.utf8)

@@ -210,6 +210,12 @@ struct GatewayTLSPinningTests {
         // New sessions read durable approvals, rather than relying on the approving session's cache.
         #expect(session().validateServerTrust(trustB, for: url))
         #expect(session().validateServerTrust(trustA, for: url))
+        // A retained edge can be the live session's pin while B remains the scalar store pin.
+        // Reviewing a new rotation from that session must not fail the conditional write.
+        let fingerprintC = String(repeating: "c", count: 64)
+        try #require(GatewayTLSStore.approveFingerprint(fingerprintC, ifCurrent: fingerprintA, stableID: route))
+        #expect(session().validateServerTrust(trustA, for: url))
+        #expect(session().validateServerTrust(trustB, for: url))
         #expect(!session(allowsAlternates: false).validateServerTrust(trustA, for: url))
         let untrustedA = try gatewayTLSTestTrust(systemTrusted: false, verifyDate: date)
         #expect(!session().validateServerTrust(untrustedA, for: url))
@@ -218,7 +224,8 @@ struct GatewayTLSPinningTests {
         let otherRoute = "profile:other"
         try #require(GatewayTLSStore.replaceFingerprint(fingerprintB, stableID: otherRoute))
         #expect(!session(routeKey: otherRoute).validateServerTrust(trustA, for: url))
-        #expect(!GatewayTLSStore.approveFingerprint(fingerprintA, ifCurrent: fingerprintA, stableID: route))
+        #expect(!GatewayTLSStore.approveFingerprint(
+            fingerprintA, ifCurrent: String(repeating: "f", count: 64), stableID: route))
         // Explicit setup/configuration writes retire alternates, including identical-pin writes.
         try #require(GatewayTLSStore.replaceFingerprint(fingerprintB, stableID: route))
         #expect(!session().validateServerTrust(trustA, for: url))
