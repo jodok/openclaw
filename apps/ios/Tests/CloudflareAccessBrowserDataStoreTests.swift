@@ -6,7 +6,8 @@ import UIKit
 
 @MainActor
 struct CloudflareAccessBrowserDataStoreTests {
-    @Test func `real Safari website reset preserves a saved native Keychain grant`() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func `real Safari website reset preserves a saved native Keychain grant`() async throws {
         // Exercise Apple's real clearing API without authenticating to any external website.
         // This proves storage separation, not that a third-party IdP presents an account picker.
         let seed = try CloudflareAccessTestTokens().session()
@@ -36,10 +37,13 @@ struct CloudflareAccessBrowserDataStoreTests {
         retired.removeAll()
 
         var prompts: [UIAlertController] = []
-        var browsers: [SFSafariViewController] = []
+        let website = AsyncStream<Void>.makeStream()
         // Deliberately omit clearWebsiteData: this invokes the supported default Apple API.
         let presenter = CloudflareAccessBrowserPresenter(
-            present: { browsers.append($0) },
+            present: { _ in
+                website.continuation.yield(())
+                website.continuation.finish()
+            },
             dismiss: { _ in },
             presentPrompt: { prompts.append($0) },
             dismissPrompt: { _ in })
@@ -50,7 +54,10 @@ struct CloudflareAccessBrowserDataStoreTests {
         defer { preparing.cancel() }
         try await waitForIngress { prompts.count == 1 }
         presenter.continuePreparation(from: prompts[0], clearWebsiteData: true)
-        try await waitForIngress { browsers.count == 1 }
+        // Wait for the actual system completion, not the short mock-ingress polling deadline.
+        var websiteEvents = website.stream.makeAsyncIterator()
+        let opened = await websiteEvents.next()
+        try #require(opened != nil)
 
         // Presentation can occur only after Apple's awaited clearing callback finishes.
         let bytesAfterReset = GenericPasswordKeychainStore.loadString(service: service, account: account)
