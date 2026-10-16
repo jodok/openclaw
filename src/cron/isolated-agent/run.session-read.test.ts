@@ -14,6 +14,9 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
+import { linkUserChannelIdentity } from "../../state/user-channel-identities.js";
+import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { makeIsolatedAgentJobFixture, makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import {
   loadSessionEntryMock,
@@ -40,6 +43,85 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 );
 
 describe("cron session preparation", () => {
+  it.each([
+    "linked",
+    "canonical",
+    "unlinked",
+    "wrong-account",
+    "unknown",
+    "malformed",
+    "collision",
+  ] as const)("prepares creator identity fail-closed: %s", async (kind) => {
+    resetRunCronIsolatedAgentTurnHarness();
+    vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-cron-channel-creator-"));
+    const database = openOpenClawAgentDatabase({ agentId: "main", env: process.env });
+    const profile = ensureProfileForEmail("creator@example.test");
+    if (kind !== "unlinked") {
+      linkUserChannelIdentity(profile.id, {
+        channelId: "slack",
+        accountId: "work",
+        senderId: "U-LEGACY-CREATOR",
+      });
+    }
+    using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
+    const boundary = new Error("session preparation reached");
+    resolveCronSessionMock.mockRejectedValue(boundary);
+    const sessionKey = "agent:main:source";
+    const preparation = prepareCronRunContext({
+      input: makeIsolatedAgentParamsFixture({
+        agentId: "main",
+        cfg: {
+          session: { store: database.path },
+          gateway: {
+            roles: {
+              default: "guest",
+              definitions: { guest: { agents: "*", scopes: [], sandbox: "required" } },
+            },
+          },
+        },
+        sessionKey,
+        job: makeIsolatedAgentJobFixture({
+          createdActor: {
+            type: "human",
+            source: kind === "unknown" ? "unknown" : kind === "canonical" ? "profile" : "channel",
+            id:
+              kind === "canonical" || kind === "collision"
+                ? profile.id
+                : kind === "malformed"
+                  ? "invalid-sender"
+                  : "U-LEGACY-CREATOR",
+          },
+          owner: {
+            agentId: "main",
+            sessionKey,
+            accountId: kind === "wrong-account" ? "other" : "work",
+          },
+          scheduledToolPolicy: {
+            version: 1,
+            mode: "account",
+            ownerSessionKey: sessionKey,
+            ownerAccountId: "work",
+          },
+          toolsAllowProvenance: {
+            version: 1,
+            source: "final-executable-surface",
+            callerOrigin: { kind: "external", channel: "slack" },
+          },
+          payload: { kind: "agentTurn", message: "test", toolsAllow: ["read"] },
+          delivery: { mode: "none" },
+        }),
+      }),
+      isFastTestEnv: true,
+      onLifecycleInterrupt: () => {},
+    });
+    if (kind === "linked" || kind === "canonical") {
+      await expect(preparation).rejects.toBe(boundary);
+    } else {
+      await expect(preparation).rejects.toMatchObject({ name: "UserProfileNotFoundError" });
+      expect(resolveCronSessionMock).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["unchanged", "workspace"] as const)(
     "revalidates %s authority across absent-field snapshot representations",
     async (change) => {
