@@ -2,6 +2,10 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import {
+  getRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import {
@@ -14,11 +18,19 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
-import { linkUserChannelIdentity } from "../../state/user-channel-identities.js";
+import {
+  linkUserChannelIdentity,
+  unlinkUserChannelIdentity,
+} from "../../state/user-channel-identities.js";
 import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
+import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { makeIsolatedAgentJobFixture, makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import {
+  loadRunCronIsolatedAgentTurn,
+  mockRunCronFallbackPassthrough,
+  ensureAgentWorkspaceMock,
+  runEmbeddedAgentMock,
   loadSessionEntryMock,
   patchSessionEntryMock,
   resetRunCronIsolatedAgentTurnHarness,
@@ -45,12 +57,13 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 describe("cron session preparation", () => {
   it.each([
     "linked",
-    "canonical",
+    "historical-actor",
+    "canonical-historical-actor",
+    "wrong-channel",
+    "legacy-unbound",
     "unlinked",
     "wrong-account",
-    "unknown",
     "malformed",
-    "collision",
   ] as const)("prepares creator identity fail-closed: %s", async (kind) => {
     resetRunCronIsolatedAgentTurnHarness();
     vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-cron-channel-creator-"));
@@ -75,7 +88,14 @@ describe("cron session preparation", () => {
           gateway: {
             roles: {
               default: "guest",
-              definitions: { guest: { agents: "*", scopes: [], sandbox: "required" } },
+              definitions: {
+                guest: {
+                  sessions: { others: "none" },
+                  agents: "*",
+                  scopes: [],
+                  sandbox: "required",
+                },
+              },
             },
           },
         },
@@ -83,12 +103,13 @@ describe("cron session preparation", () => {
         job: makeIsolatedAgentJobFixture({
           createdActor: {
             type: "human",
-            source: kind === "unknown" ? "unknown" : kind === "canonical" ? "profile" : "channel",
+            source: kind === "canonical-historical-actor" ? "profile" : "channel",
+            // A shared main session may retain a previous person's actor.
             id:
-              kind === "canonical" || kind === "collision"
-                ? profile.id
-                : kind === "malformed"
-                  ? "invalid-sender"
+              kind === "canonical-historical-actor"
+                ? "different-historical-profile"
+                : kind === "historical-actor"
+                  ? "U-PREVIOUS-PERSON"
                   : "U-LEGACY-CREATOR",
           },
           owner: {
@@ -105,7 +126,20 @@ describe("cron session preparation", () => {
           toolsAllowProvenance: {
             version: 1,
             source: "final-executable-surface",
-            callerOrigin: { kind: "external", channel: "slack" },
+            callerOrigin: {
+              kind: "external",
+              channel: kind === "wrong-channel" ? "discord" : "slack",
+            },
+            ...(kind === "legacy-unbound"
+              ? {}
+              : {
+                  channelRequester: {
+                    version: 1,
+                    channel: "slack",
+                    accountId: "work",
+                    senderId: kind === "malformed" ? "" : "U-LEGACY-CREATOR",
+                  },
+                }),
           },
           payload: { kind: "agentTurn", message: "test", toolsAllow: ["read"] },
           delivery: { mode: "none" },
@@ -114,13 +148,120 @@ describe("cron session preparation", () => {
       isFastTestEnv: true,
       onLifecycleInterrupt: () => {},
     });
-    if (kind === "linked" || kind === "canonical") {
+    if (kind === "linked" || kind === "historical-actor" || kind === "canonical-historical-actor") {
       await expect(preparation).rejects.toBe(boundary);
     } else {
-      await expect(preparation).rejects.toMatchObject({ name: "UserProfileNotFoundError" });
+      await expect(preparation).rejects.toThrow(/reauthoriz/i);
       expect(resolveCronSessionMock).not.toHaveBeenCalled();
     }
   });
+
+  it.each(["unchanged", "revoked", "relinked", "role", "config"] as const)(
+    "checks requester authority at runner launch after awaited preparation: %s",
+    async (change) => {
+      resetRunCronIsolatedAgentTurnHarness();
+      mockRunCronFallbackPassthrough();
+      vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-cron-launch-authority-"));
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: process.env });
+      const profile = ensureProfileForEmail("requester@example.test");
+      const identity = { channelId: "slack", accountId: "default", senderId: "U-REQUESTER" };
+      linkUserChannelIdentity(profile.id, identity);
+      using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
+      ensureAgentWorkspaceMock.mockImplementationOnce(async () => {
+        if (change === "revoked" || change === "relinked") {
+          unlinkUserChannelIdentity(profile.id, identity);
+          if (change === "relinked") {
+            linkUserChannelIdentity(profile.id, identity);
+          }
+        } else if (change === "role") {
+          setUserProfileRole(profile.id, "restricted");
+        } else if (change === "config") {
+          const current = getRuntimeConfigSnapshot()!;
+          setRuntimeConfigSnapshot({
+            ...current,
+            gateway: {
+              ...current.gateway,
+              roles: {
+                default: "restricted",
+                definitions: {
+                  restricted: {
+                    sessions: { others: "none" },
+                    agents: "*",
+                    scopes: [],
+                    sandbox: "required",
+                  },
+                },
+              },
+            },
+          });
+        }
+        return { dir: "/tmp/workspace" };
+      });
+      const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
+      const result = await runCronIsolatedAgentTurn(
+        makeIsolatedAgentParamsFixture({
+          agentId: "main",
+          cfg: {
+            session: { store: database.path },
+            gateway: {
+              roles: {
+                default: "guest",
+                definitions: {
+                  guest: {
+                    sessions: { others: "none" },
+                    agents: "*",
+                    scopes: [],
+                    sandbox: "required",
+                  },
+                  restricted: {
+                    sessions: { others: "none" },
+                    agents: "*",
+                    scopes: [],
+                    sandbox: "required",
+                  },
+                },
+              },
+            },
+          },
+          job: makeIsolatedAgentJobFixture({
+            createdActor: { type: "human", source: "channel", id: "U-HISTORICAL-PERSON" },
+            owner: { agentId: "main", sessionKey: "agent:main:source", accountId: "default" },
+            scheduledToolPolicy: {
+              version: 1,
+              mode: "account",
+              ownerSessionKey: "agent:main:source",
+              ownerAccountId: "default",
+            },
+            toolsAllowProvenance: {
+              version: 1,
+              source: "final-executable-surface",
+              callerOrigin: { kind: "external", channel: "slack" },
+              channelRequester: {
+                version: 1,
+                channel: "slack",
+                accountId: "default",
+                senderId: "U-REQUESTER",
+              },
+            },
+            payload: { kind: "agentTurn", message: "test", toolsAllow: ["read"] },
+            delivery: { mode: "none" },
+          }),
+        }),
+      );
+      if (change === "unchanged") {
+        expect(result.status).toBe("ok");
+        expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
+        expect(runEmbeddedAgentMock.mock.calls[0]?.[0].execSession).toMatchObject({
+          sandbox: "required",
+          createdActor: { type: "human", source: "channel", id: "U-HISTORICAL-PERSON" },
+        });
+      } else {
+        expect(result.status).toBe("error");
+        expect(result.error).toMatch(/reauthoriz/i);
+        expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it.each(["unchanged", "workspace"] as const)(
     "revalidates %s authority across absent-field snapshot representations",

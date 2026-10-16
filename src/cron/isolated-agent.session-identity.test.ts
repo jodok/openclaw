@@ -171,13 +171,11 @@ describe("runCronIsolatedAgentTurn session identity", () => {
           source,
           id: source === "channel" ? "U-CREATOR" : profile.id,
         };
-        if (source === "channel") {
-          linkUserChannelIdentity(profile.id, {
-            channelId: "slack",
-            accountId: "default",
-            senderId: "U-CREATOR",
-          });
-        }
+        linkUserChannelIdentity(profile.id, {
+          channelId: "slack",
+          accountId: "default",
+          senderId: "U-CREATOR",
+        });
         const job: CronStoredJob = {
           ...makeJob({ kind: "agentTurn", message: "persist this turn", toolsAllow: ["read"] }),
           createdActor,
@@ -192,6 +190,12 @@ describe("runCronIsolatedAgentTurn session identity", () => {
             version: 1,
             source: "final-executable-surface",
             callerOrigin: { kind: "external", channel: "slack" },
+            channelRequester: {
+              version: 1,
+              channel: "slack",
+              accountId: "default",
+              senderId: "U-CREATOR",
+            },
           },
           delivery: { mode: "none" },
         };

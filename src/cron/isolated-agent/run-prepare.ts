@@ -178,7 +178,10 @@ export async function prepareCronRunContext(params: {
 
   async function prepareAdmittedSession() {
     const now = Date.now();
-    const sandbox = await resolveCronCreatorSandbox(runtimeCfg, input.job);
+    const { sandbox, assertCurrent: assertCreatorCurrent } = await resolveCronCreatorSandbox(
+      runtimeCfg,
+      input.job,
+    );
     const usesExactRunSession = usesDetachedRunSession || baseSessionKey.startsWith("cron:");
     const cronSession = await prepareCronSession({
       cfg: runtimeCfg,
@@ -672,6 +675,7 @@ export async function prepareCronRunContext(params: {
               : undefined,
           cronSession,
           sessionWorkAdmission,
+          assertCreatorCurrent,
           persistSessionEntry,
           preRunSessionPersisted,
           runContinuationSession,

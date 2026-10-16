@@ -1,28 +1,81 @@
+import {
+  createRuntimeConfigReader,
+  getRuntimeConfigSnapshot,
+  getRuntimeConfigSnapshotMetadata,
+} from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveCreatorSandbox } from "../gateway/operator-role-policy.js";
-import { prepareUserChannelIdentityAuthority } from "../state/user-channel-identity-operations.js";
-import { UserProfileNotFoundError } from "../state/user-profiles-schema.js";
-import { resolveCronAuthenticatedCallerOrigin } from "./tools-allow-provenance.js";
+import {
+  resolveCreatorSandbox,
+  resolveOperatorRolePolicyForAssignment,
+} from "../gateway/operator-role-policy.js";
+import {
+  prepareUserChannelIdentityAuthority,
+  prepareUserProfileRoleAuthority,
+} from "../state/user-channel-identity-operations.js";
+import {
+  resolveCronAuthenticatedCallerOrigin,
+  resolveCronAuthenticatedChannelRequester,
+} from "./tools-allow-provenance.js";
 import type { CronStoredJob } from "./types.js";
 
-/** Resolve shipped native sender stamps without changing their historical provenance. */
+/** Historical actors are attribution; only the authenticated requester binds channel authority. */
 export async function resolveCronCreatorSandbox(cfg: OpenClawConfig, job: CronStoredJob) {
-  let creator = job.createdActor;
-  if (cfg.gateway?.roles && creator?.type === "human" && creator.source === "channel") {
-    const origin = resolveCronAuthenticatedCallerOrigin(job);
-    const accountId = job.owner?.accountId;
-    const linked =
-      origin?.kind === "external" && accountId && creator.id
-        ? await prepareUserChannelIdentityAuthority({
-            channelId: origin.channel,
-            accountId,
-            senderId: creator.id,
-          })
-        : undefined;
-    if (!linked || !linked.isCurrent()) {
-      throw new UserProfileNotFoundError(creator.id ?? "");
-    }
-    creator = { type: "human", source: "profile", id: linked.linked.profileId };
+  const readConfig = createRuntimeConfigReader(cfg);
+  const followsRuntime = readConfig() === getRuntimeConfigSnapshot();
+  const publication = getRuntimeConfigSnapshotMetadata();
+  const roles = cfg.gateway?.roles;
+  const origin = resolveCronAuthenticatedCallerOrigin(job);
+  const requester = resolveCronAuthenticatedChannelRequester(job);
+  const channelCreated =
+    (job.createdActor?.type === "human" && job.createdActor.source === "channel") ||
+    origin?.kind === "external" ||
+    Boolean(job.toolsAllowProvenance?.channelRequester);
+  const reauthorizationError = () =>
+    new Error(
+      "Automation channel requester is unbound or no longer authorized. Ask a Gateway administrator to use cron.reauthorizeChannelRequester with the exact channel, account, sender, canonical profile and current config revision.",
+    );
+  if (channelCreated && !requester) {
+    throw reauthorizationError();
   }
-  return resolveCreatorSandbox(cfg, { actor: creator });
+  if (requester && origin && (origin.kind !== "external" || origin.channel !== requester.channel)) {
+    throw reauthorizationError();
+  }
+  const linked = requester
+    ? await prepareUserChannelIdentityAuthority({
+        channelId: requester.channel,
+        accountId: requester.accountId,
+        senderId: requester.senderId,
+      })
+    : undefined;
+  if (requester && !linked) {
+    throw reauthorizationError();
+  }
+  const profileId =
+    linked?.linked.profileId ??
+    (job.createdActor?.type === "human" && job.createdActor.source === "profile"
+      ? job.createdActor.id
+      : undefined);
+  const profileAuthority =
+    roles && profileId && !linked ? await prepareUserProfileRoleAuthority(profileId) : undefined;
+  const profile = linked?.linked ?? profileAuthority;
+  const assertCurrent = () => {
+    if (
+      (followsRuntime && getRuntimeConfigSnapshotMetadata() !== publication) ||
+      readConfig().gateway?.roles !== roles ||
+      (linked && !linked.isCurrent()) ||
+      (roles && profileId && !linked && (!profileAuthority || !profileAuthority.isCurrent()))
+    ) {
+      throw reauthorizationError();
+    }
+  };
+  assertCurrent();
+  const sandbox = profile
+    ? resolveOperatorRolePolicyForAssignment(
+        profile.profileId,
+        profile.role,
+        cfg,
+        profile.githubLogin ?? null,
+      )?.sandbox
+    : resolveCreatorSandbox(cfg, { actor: requester ? undefined : job.createdActor });
+  return { sandbox: sandbox === "required" ? ("required" as const) : undefined, assertCurrent };
 }
