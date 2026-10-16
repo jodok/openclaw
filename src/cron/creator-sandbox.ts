@@ -26,8 +26,15 @@ export async function resolveCronCreatorSandbox(cfg: OpenClawConfig, job: CronSt
   const roles = cfg.gateway?.roles;
   const origin = resolveCronAuthenticatedCallerOrigin(job);
   const requester = resolveCronAuthenticatedChannelRequester(job);
+  // Local provenance supersedes a reused session's channel attribution.
+  const actor =
+    origin?.kind === "local" &&
+    job.createdActor?.type === "human" &&
+    job.createdActor.source === "channel"
+      ? undefined
+      : job.createdActor;
   const channelCreated =
-    (job.createdActor?.type === "human" && job.createdActor.source === "channel") ||
+    (actor?.type === "human" && actor.source === "channel") ||
     origin?.kind === "external" ||
     Boolean(job.toolsAllowProvenance?.channelRequester);
   const reauthorizationError = () =>
@@ -52,9 +59,7 @@ export async function resolveCronCreatorSandbox(cfg: OpenClawConfig, job: CronSt
   }
   const profileId =
     linked?.linked.profileId ??
-    (job.createdActor?.type === "human" && job.createdActor.source === "profile"
-      ? job.createdActor.id
-      : undefined);
+    (actor?.type === "human" && actor.source === "profile" ? actor.id : undefined);
   const profileAuthority =
     roles && profileId && !linked ? await prepareUserProfileRoleAuthority(profileId) : undefined;
   const profile = linked?.linked ?? profileAuthority;
@@ -80,6 +85,10 @@ export async function resolveCronCreatorSandbox(cfg: OpenClawConfig, job: CronSt
         cfg,
         profile.githubLogin ?? null,
       )?.sandbox
-    : resolveCreatorSandbox(cfg, { actor: requester ? undefined : job.createdActor });
-  return { sandbox: sandbox === "required" ? ("required" as const) : undefined, assertCurrent };
+    : resolveCreatorSandbox(cfg, { actor: requester ? undefined : actor });
+  return {
+    sandbox: sandbox === "required" ? ("required" as const) : undefined,
+    profileId: profile?.profileId ?? profileId,
+    assertCurrent,
+  };
 }

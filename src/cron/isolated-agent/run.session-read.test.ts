@@ -57,6 +57,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 describe("cron session preparation", () => {
   it.each([
     "linked",
+    "local",
     "historical-actor",
     "canonical-historical-actor",
     "wrong-channel",
@@ -126,11 +127,14 @@ describe("cron session preparation", () => {
           toolsAllowProvenance: {
             version: 1,
             source: "final-executable-surface",
-            callerOrigin: {
-              kind: "external",
-              channel: kind === "wrong-channel" ? "discord" : "slack",
-            },
-            ...(kind === "legacy-unbound"
+            callerOrigin:
+              kind === "local"
+                ? { kind: "local" }
+                : {
+                    kind: "external",
+                    channel: kind === "wrong-channel" ? "discord" : "slack",
+                  },
+            ...(kind === "legacy-unbound" || kind === "local"
               ? {}
               : {
                   channelRequester: {
@@ -148,7 +152,12 @@ describe("cron session preparation", () => {
       isFastTestEnv: true,
       onLifecycleInterrupt: () => {},
     });
-    if (kind === "linked" || kind === "historical-actor" || kind === "canonical-historical-actor") {
+    if (
+      kind === "linked" ||
+      kind === "local" ||
+      kind === "historical-actor" ||
+      kind === "canonical-historical-actor"
+    ) {
       await expect(preparation).rejects.toBe(boundary);
     } else {
       await expect(preparation).rejects.toThrow(/reauthoriz/i);
