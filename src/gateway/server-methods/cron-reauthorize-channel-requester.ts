@@ -11,6 +11,7 @@ import {
 import { cronJobReadView } from "../../cron/job-read-view.js";
 import { resolveCronScheduledToolPolicy } from "../../cron/scheduled-tool-policy.js";
 import {
+  normalizeCronAuthenticatedChannelRequester,
   normalizeCronToolsAllowProvenance,
   resolveCronAuthenticatedCallerOrigin,
 } from "../../cron/tools-allow-provenance.js";
@@ -19,6 +20,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
 import { prepareUserChannelIdentityAuthority } from "../../state/user-channel-identity-operations.js";
 import { resolveCronMutationCommitGuard } from "./cron-caller-scope.js";
+import { respondCronJobNotFound } from "./cron-job-access.js";
 import { respondCronJobConfigRevisionConflict } from "./cron-revision-error.js";
 import type { GatewayRequestHandler } from "./types.js";
 import { prepareUserProfileAdministration } from "./users-profile-access.js";
@@ -57,7 +59,17 @@ export const cronReauthorizeChannelRequesterHandler: GatewayRequestHandler = asy
     );
     return;
   }
-  const p = params as CronReauthorizeChannelRequesterParams;
+  const input = params as CronReauthorizeChannelRequesterParams;
+  const normalizedRequester = normalizeCronAuthenticatedChannelRequester({ version: 1, ...input });
+  if (!normalizedRequester) {
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, "Invalid channel requester identity"),
+    );
+    return;
+  }
+  const p = { ...input, ...normalizedRequester };
   try {
     let administrator: () => void;
     try {
@@ -86,6 +98,11 @@ export const cronReauthorizeChannelRequesterHandler: GatewayRequestHandler = asy
       }
     };
     assertCurrent();
+    if (!(await context.cron.readJob(p.id))) {
+      assertCurrent();
+      respondCronJobNotFound(respond, p.id);
+      return;
+    }
     const mutationGuard = resolveCronMutationCommitGuard(client, context, undefined, options);
     const job = await context.cron.updateWithPrecondition(
       p.id,
@@ -108,7 +125,8 @@ export const cronReauthorizeChannelRequesterHandler: GatewayRequestHandler = asy
         const channelCreated =
           (lockedJob.createdActor?.type === "human" &&
             lockedJob.createdActor.source === "channel") ||
-          origin?.kind === "external";
+          origin?.kind === "external" ||
+          requester !== undefined;
         if (
           !channelCreated ||
           !cronJobUsesToolRuntime(lockedJob) ||

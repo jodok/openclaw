@@ -32,7 +32,12 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture() {
+async function fixture(
+  initial: Pick<
+    NonNullable<Parameters<CronService["add"]>[1]>,
+    "createdActor" | "toolsAllowProvenance"
+  > = {},
+) {
   stateDir = tempDirs.make("cron-reauthorize-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
@@ -70,6 +75,7 @@ async function fixture() {
         source: "authenticated-requester",
         callerOrigin: { kind: "external", channel: "discord" },
       },
+      ...initial,
       scheduledToolPolicy: {
         version: 1,
         mode: "account",
@@ -137,6 +143,82 @@ describe("cron.reauthorizeChannelRequester production mutation", () => {
         },
       },
     });
+  });
+
+  it("looks up the normalized tuple before checking the expected profile and persists that tuple", async () => {
+    const f = await fixture();
+    const collision = ensureProfileForEmail("case-collision@example.test");
+    await changeCanonicalUserChannelIdentity("link", collision.id, {
+      ...f.identity,
+      channelId: "Discord",
+    });
+    const tuple = { channel: "Discord", accountId: "WORK", senderId: " sender-1 " };
+    const rejected = await f.invoke({ channel: "Discord", expectedProfileId: collision.id });
+    expect(rejected.mock.calls[0]?.[2]).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: expect.stringContaining("Exact channel identity link"),
+    });
+    expect(await f.service.readJob(f.job.id)).toEqual(f.job);
+
+    const accepted = await f.invoke(tuple);
+    expect(accepted.mock.calls[0]?.[0]).toBe(true);
+    expect(await f.service.readJob(f.job.id)).toMatchObject({
+      createdActor: f.job.createdActor,
+      toolsAllowProvenance: {
+        channelRequester: {
+          version: 1,
+          channel: "discord",
+          accountId: "work",
+          senderId: "sender-1",
+        },
+      },
+    });
+  });
+
+  it("reauthorizes requester-only provenance while preserving a historical profile creator", async () => {
+    const createdActor = { type: "human", source: "profile", id: "historical-profile" } as const;
+    const f = await fixture({
+      createdActor,
+      toolsAllowProvenance: {
+        version: 1,
+        source: "authenticated-requester",
+        channelRequester: {
+          version: 1,
+          channel: "discord",
+          accountId: "work",
+          senderId: "historical-sender",
+        },
+      },
+    });
+    expect(f.job.toolsAllowProvenance?.callerOrigin).toBeUndefined();
+    const respond = await f.invoke();
+    expect(respond.mock.calls[0]?.[0]).toBe(true);
+    expect(await f.service.readJob(f.job.id)).toMatchObject({
+      ...f.job,
+      createdActor,
+      updatedAtMs: expect.any(Number),
+      toolsAllowProvenance: {
+        version: 1,
+        source: "authenticated-requester",
+        callerOrigin: { kind: "external", channel: "discord" },
+        channelRequester: {
+          version: 1,
+          channel: "discord",
+          accountId: "work",
+          senderId: "sender-1",
+        },
+      },
+    });
+  });
+
+  it("reports a missing job as an invalid request", async () => {
+    const f = await fixture();
+    const respond = await f.invoke({ id: "missing-job" });
+    expect(respond.mock.calls[0]?.[2]).toMatchObject({
+      code: "INVALID_REQUEST",
+      details: { code: "CRON_JOB_NOT_FOUND", jobId: "missing-job" },
+    });
+    expect(await f.service.readJob(f.job.id)).toEqual(f.job);
   });
 
   it.each([
