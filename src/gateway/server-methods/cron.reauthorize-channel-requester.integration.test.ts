@@ -235,4 +235,17 @@ describe("cron.reauthorizeChannelRequester production mutation", () => {
       vi.restoreAllMocks();
     },
   );
+  it("reports persistence failure as unavailable without changing the job", async () => {
+    const f = await fixture();
+    const update = vi
+      .spyOn(f.service, "updateWithPrecondition")
+      .mockRejectedValueOnce(new Error("State worker unavailable"));
+    try {
+      const respond = await f.invoke();
+      expect(respond.mock.calls[0]?.[2]).toMatchObject({ code: "UNAVAILABLE" });
+      expect(await f.service.readJob(f.job.id)).toEqual(f.job);
+    } finally {
+      update.mockRestore();
+    }
+  });
 });

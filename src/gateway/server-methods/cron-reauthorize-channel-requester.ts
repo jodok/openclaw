@@ -155,7 +155,9 @@ export const cronReauthorizeChannelRequesterHandler: GatewayRequestHandler = asy
       errorShape(
         error instanceof CronReauthorizationForbiddenError
           ? ErrorCodes.FORBIDDEN
-          : ErrorCodes.INVALID_REQUEST,
+          : error instanceof TypeError
+            ? ErrorCodes.INVALID_REQUEST
+            : ErrorCodes.UNAVAILABLE,
         formatErrorMessage(error),
       ),
     );
