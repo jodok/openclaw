@@ -59,6 +59,7 @@ export const cronReauthorizeChannelRequesterHandler: GatewayRequestHandler = asy
     );
     return;
   }
+  // SAFETY: assertValidParams above validated the complete reauthorization protocol schema.
   const input = params as CronReauthorizeChannelRequesterParams;
   const normalizedRequester = normalizeCronAuthenticatedChannelRequester({ version: 1, ...input });
   if (!normalizedRequester) {
