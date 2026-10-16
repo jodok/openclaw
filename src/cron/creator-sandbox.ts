@@ -65,7 +65,11 @@ export async function resolveCronCreatorSandbox(cfg: OpenClawConfig, job: CronSt
       (linked && !linked.isCurrent()) ||
       (roles && profileId && !linked && (!profileAuthority || !profileAuthority.isCurrent()))
     ) {
-      throw reauthorizationError();
+      throw channelCreated
+        ? reauthorizationError()
+        : new Error(
+            "Automation creator profile authority changed during preparation. Retry the run to recompute the current sandbox policy; if the profile was removed, ask an administrator to restore its authority.",
+          );
     }
   };
   assertCurrent();

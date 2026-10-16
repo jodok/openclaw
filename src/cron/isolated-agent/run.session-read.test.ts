@@ -156,8 +156,8 @@ describe("cron session preparation", () => {
     }
   });
 
-  it.each(["unchanged", "revoked", "relinked", "role", "config"] as const)(
-    "checks requester authority at runner launch after awaited preparation: %s",
+  it.each(["unchanged", "revoked", "relinked", "role", "config", "profile-role"] as const)(
+    "checks creator authority at runner launch after awaited preparation: %s",
     async (change) => {
       resetRunCronIsolatedAgentTurnHarness();
       mockRunCronFallbackPassthrough();
@@ -165,7 +165,9 @@ describe("cron session preparation", () => {
       const database = openOpenClawAgentDatabase({ agentId: "main", env: process.env });
       const profile = ensureProfileForEmail("requester@example.test");
       const identity = { channelId: "slack", accountId: "default", senderId: "U-REQUESTER" };
-      linkUserChannelIdentity(profile.id, identity);
+      if (change !== "profile-role") {
+        linkUserChannelIdentity(profile.id, identity);
+      }
       using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
       ensureAgentWorkspaceMock.mockImplementationOnce(async () => {
         if (change === "revoked" || change === "relinked") {
@@ -173,7 +175,7 @@ describe("cron session preparation", () => {
           if (change === "relinked") {
             linkUserChannelIdentity(profile.id, identity);
           }
-        } else if (change === "role") {
+        } else if (change === "role" || change === "profile-role") {
           setUserProfileRole(profile.id, "restricted");
         } else if (change === "config") {
           const current = getRuntimeConfigSnapshot()!;
@@ -224,7 +226,10 @@ describe("cron session preparation", () => {
             },
           },
           job: makeIsolatedAgentJobFixture({
-            createdActor: { type: "human", source: "channel", id: "U-HISTORICAL-PERSON" },
+            createdActor:
+              change === "profile-role"
+                ? { type: "human", source: "profile", id: profile.id }
+                : { type: "human", source: "channel", id: "U-HISTORICAL-PERSON" },
             owner: { agentId: "main", sessionKey: "agent:main:source", accountId: "default" },
             scheduledToolPolicy: {
               version: 1,
@@ -232,17 +237,20 @@ describe("cron session preparation", () => {
               ownerSessionKey: "agent:main:source",
               ownerAccountId: "default",
             },
-            toolsAllowProvenance: {
-              version: 1,
-              source: "final-executable-surface",
-              callerOrigin: { kind: "external", channel: "slack" },
-              channelRequester: {
-                version: 1,
-                channel: "slack",
-                accountId: "default",
-                senderId: "U-REQUESTER",
-              },
-            },
+            toolsAllowProvenance:
+              change === "profile-role"
+                ? undefined
+                : {
+                    version: 1,
+                    source: "final-executable-surface",
+                    callerOrigin: { kind: "external", channel: "slack" },
+                    channelRequester: {
+                      version: 1,
+                      channel: "slack",
+                      accountId: "default",
+                      senderId: "U-REQUESTER",
+                    },
+                  },
             payload: { kind: "agentTurn", message: "test", toolsAllow: ["read"] },
             delivery: { mode: "none" },
           }),
@@ -257,7 +265,12 @@ describe("cron session preparation", () => {
         });
       } else {
         expect(result.status).toBe("error");
-        expect(result.error).toMatch(/reauthoriz/i);
+        if (change === "profile-role") {
+          expect(result.error).toContain("Retry");
+          expect(result.error).not.toContain("cron.reauthorizeChannelRequester");
+        } else {
+          expect(result.error).toContain("cron.reauthorizeChannelRequester");
+        }
         expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
       }
     },
