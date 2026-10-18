@@ -232,7 +232,8 @@ def watch_simulator_template(name)
   UI.user_error!("Failed to list simulator runtimes and device types: #{stderr.to_s.strip}") unless status.success?
   inventory = JSON.parse(stdout).slice("runtimes", "devicetypes")
   runtimes = inventory.fetch("runtimes").select do |runtime|
-    runtime.fetch("identifier").start_with?("com.apple.CoreSimulator.SimRuntime.watchOS-") && runtime["isAvailable"] == true
+    runtime.fetch("identifier").start_with?("com.apple.CoreSimulator.SimRuntime.watchOS-") && runtime["isAvailable"] == true &&
+      Array(runtime["supportedArchitectures"]).include?(RbConfig::CONFIG.fetch("host_cpu"))
   end.sort_by { |runtime| Gem::Version.new(runtime.fetch("version")) }.reverse
   types = inventory.fetch("devicetypes").select { |type| type.fetch("name").start_with?("Apple Watch") }
   types = types.sort_by { |type| [type.fetch("name") == name ? 0 : 1, type.fetch("name").include?("Ultra") ? 0 : 1] }

@@ -701,7 +701,7 @@ module Open3
         "runtimes" => [],
         "devicetypes" => [{ "name" => "Apple Watch Ultra 3 (49mm)", "identifier" => "watch-type", "minRuntimeVersion" => 26 << 16 }]
       }
-      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true }] : []
+      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => [RbConfig::CONFIG.fetch("host_cpu")] }] : []
       return [JSON.generate(inventory), "", Struct.new(:success?).new(true)]
     end
     raise "unexpected external command: #{command}" unless command == "/usr/libexec/PlistBuddy"
@@ -905,7 +905,7 @@ type_id = "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Ultra-3-49mm"
 name = "Apple Watch Ultra 3 (49mm)"
 template = { "name" => name, "deviceTypeIdentifier" => type_id, "runtime" => runtime_id }
 type = { "name" => name, "identifier" => type_id, "minRuntimeVersion" => 26 << 16, "maxRuntimeVersion" => 0xFFFFFFFF }
-runtime = { "identifier" => runtime_id, "version" => "27.0", "isAvailable" => true }
+runtime = { "identifier" => runtime_id, "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => [RbConfig::CONFIG.fetch("host_cpu")] }
 $inventory_reads = 0
 $devices = [template.merge("udid" => "existing")]
 raise "exact device lost" unless resolve_simulator_device(name).fetch("udid") == "existing"
@@ -914,6 +914,11 @@ raise "unnecessary inventory lookup" unless $inventory_reads.zero?
 $devices = []
 $inventory = { "runtimes" => [runtime], "devicetypes" => [type] }
 raise "missing creation template" unless resolve_simulator_device(name) == template
+# Newer runtimes for another architecture must not hide a usable host runtime.
+foreign_runtime = runtime.merge("identifier" => "foreign-runtime", "version" => "28.0", "supportedArchitectures" => ["unsupported-host"])
+$inventory["runtimes"] = [foreign_runtime, runtime]
+raise "foreign architecture selected" unless resolve_simulator_device(name) == template
+$inventory["runtimes"] = [runtime]
 # A preferred type that requires a newer runtime must not win over a compatible fallback.
 older_type = type.merge("name" => "Apple Watch Series 10 (46mm)", "identifier" => "series-10")
 $inventory["devicetypes"] = [type.merge("minRuntimeVersion" => 28 << 16), older_type]
@@ -923,6 +928,8 @@ $inventory["runtimes"] = [runtime.merge("supportedDeviceTypes" => [{ "identifier
 raise "runtime support ignored" unless resolve_simulator_device(name).fetch("deviceTypeIdentifier") == "series-10"
 [
   { "runtimes" => [], "devicetypes" => [type] },
+  { "runtimes" => [foreign_runtime], "devicetypes" => [type] },
+  { "runtimes" => [runtime.reject { |key, _| key == "supportedArchitectures" }], "devicetypes" => [type] },
   { "runtimes" => [runtime.merge("isAvailable" => false, "availabilityError" => "runtime unavailable")], "devicetypes" => [type] },
   { "runtimes" => [runtime], "devicetypes" => [type.merge("minRuntimeVersion" => 28 << 16)] },
   { "runtimes" => [runtime], "devicetypes" => [type.merge("maxRuntimeVersion" => 26 << 16)] },
@@ -1007,7 +1014,7 @@ module Open3
         "runtimes" => [],
         "devicetypes" => [{ "name" => "Apple Watch Ultra 3 (49mm)", "identifier" => "watch-type", "minRuntimeVersion" => 26 << 16 }]
       }
-      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true }] : []
+      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => [RbConfig::CONFIG.fetch("host_cpu")] }] : []
       return [JSON.generate(inventory), "", Struct.new(:success?).new(true)]
     end
     raise "unexpected external command: #{command}" unless command == "/usr/libexec/PlistBuddy"
