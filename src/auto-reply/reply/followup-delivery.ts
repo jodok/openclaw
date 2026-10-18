@@ -259,9 +259,7 @@ export async function resolveFollowupDeliveryDecision(params: {
     result.sourceReplyDeliveryState === undefined &&
     resolveExplicitFinalSourceReplyDeliveryEvidence(result) === undefined;
   const assistantFinalText = normalizeAssistantFinalDeliveryText(
-    typeof result.meta?.finalAssistantVisibleText === "string"
-      ? result.meta.finalAssistantVisibleText
-      : "",
+    result.meta?.finalAssistantVisibleText ?? "",
   );
   let payloads = preparePayloads(sourcePayloads, {
     reasoningPayloadsEnabled: opts?.reasoningPayloadsEnabled === true,
@@ -551,13 +549,13 @@ async function sendFollowupPayloads(params: {
       }
       if (!result.delivered && !result.suppressed) {
         const routeError = result.error ?? "no visible delivery";
-        logVerbose(`followup queue: route-reply failed: ${routeError}`);
+        (dispatcherAvailable ? logVerbose : defaultRuntime.error)?.(
+          `followup queue: route-reply failed: ${routeError}`,
+        );
         if (sameChannelOrigin && dispatcherAvailable) {
           await dispatchPayload(payload);
         } else if (dispatcherAvailable) {
           crossChannelFailures.push(payload);
-        } else {
-          defaultRuntime.error?.(`followup queue: route-reply failed: ${routeError}`);
         }
       } else if (result.delivered) {
         for (const correlation of turn.queued.deliveryCorrelations ?? []) {

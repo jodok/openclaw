@@ -27,10 +27,7 @@ import {
   SESSION_TOTAL_TOKENS_VERSION,
   type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
-import {
-  persistCompactionBoundaryWithSessionEntryAsync,
-  updateSessionEntry,
-} from "../../config/sessions/session-accessor.js";
+import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -160,10 +157,9 @@ export async function runSessionCompactionIfNeeded(params: {
   const runtimeId = resolveFollowupAgentRuntimeId(runtimeParams);
   const isCli = followupUsesCliRuntime(runtimeParams, runtimeId);
   const ownsNativeCompaction = followupOwnsNativeCompaction(runtimeParams, runtimeId);
-  if (isCli || ownsNativeCompaction) {
+  if (isCli || ownsNativeCompaction || normalizeLowercaseStringOrEmpty(runtimeId) === "codex") {
     return entry;
   }
-  const isCodexRuntime = normalizeLowercaseStringOrEmpty(runtimeId) === "codex";
 
   const compactionSessionKey = params.sessionKey;
   const configuredAgentId = params.followupRun.run.agentId ?? resolveDefaultAgentId(params.cfg);
@@ -219,16 +215,14 @@ export async function runSessionCompactionIfNeeded(params: {
     minimumThresholdTokens: responsesServerCompactionThreshold,
   });
   const freshNeedsOutputRead =
-    typeof freshPersistedTokens === "number" &&
-    typeof promptTokenEstimate === "number" &&
+    freshPersistedTokens !== undefined &&
+    promptTokenEstimate !== undefined &&
     threshold > 0 &&
     freshPersistedTokens + promptTokenEstimate >= threshold - TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS;
   const maxActiveTranscriptBytes = resolveMaxActiveTranscriptBytes(params.cfg);
-  const shouldCheckActiveTranscriptBytes = typeof maxActiveTranscriptBytes === "number";
+  const shouldCheckActiveTranscriptBytes = maxActiveTranscriptBytes !== undefined;
   const transcriptUsageTokens =
-    params.isHeartbeat ||
-    isCodexRuntime ||
-    (typeof freshPersistedTokens === "number" && !freshNeedsOutputRead)
+    params.isHeartbeat || (freshPersistedTokens !== undefined && !freshNeedsOutputRead)
       ? undefined
       : await estimatePromptTokensFromSessionTranscript({
           ...compactionTarget,
@@ -244,8 +238,8 @@ export async function runSessionCompactionIfNeeded(params: {
   const activeTranscriptBytes =
     transcriptUsageTokens?.transcriptByteSize ?? transcriptSizeSnapshot?.byteSize;
   const exceedsTranscriptByteThreshold =
-    typeof activeTranscriptBytes === "number" &&
-    typeof maxActiveTranscriptBytes === "number" &&
+    activeTranscriptBytes !== undefined &&
+    maxActiveTranscriptBytes !== undefined &&
     activeTranscriptBytes >= maxActiveTranscriptBytes;
   let terminalCompactionNoticeSent = false;
   const notifyCompaction = async (phase: CompactionNoticePhase, text?: string) => {
@@ -257,7 +251,6 @@ export async function runSessionCompactionIfNeeded(params: {
     }
   };
   const latch = entry.transcriptByteCompactionLatch;
-  // Codex still re-evaluates its native rollout fuse every turn; this only latches host-byte retries.
   const refreshedTranscriptByteCompactionLatch = refreshTranscriptByteCompactionLatch(
     latch,
     entry.sessionId,
@@ -285,11 +278,6 @@ export async function runSessionCompactionIfNeeded(params: {
   if (transcriptByteCompactionLatched) {
     await notifyCompaction("context_bounded");
     assertActive();
-  }
-  if (isCodexRuntime && !shouldCompactByTranscriptBytes) {
-    // Codex owns native-thread token pressure; OpenClaw owns the host transcript byte fuse
-    // that bounds fresh-thread bootstrap seeds.
-    return entry;
   }
   const projectedTokenCount = resolveProjectedPromptTokens(
     freshPersistedTokens,
@@ -347,8 +335,8 @@ export async function runSessionCompactionIfNeeded(params: {
       : undefined;
     assertActive();
     const transcriptByteCompactionLatch =
-      typeof postCompactionBytes === "number" &&
-      typeof maxActiveTranscriptBytes === "number" &&
+      postCompactionBytes !== undefined &&
+      maxActiveTranscriptBytes !== undefined &&
       postCompactionBytes >= maxActiveTranscriptBytes
         ? {
             activeBytes: postCompactionBytes,
@@ -447,41 +435,6 @@ export async function runSessionCompactionIfNeeded(params: {
         sourceAuthority: { assertActive, operatorAuthority },
         requestBudget: params.compactionRequestBudget,
         pendingUserEntryId: params.pendingUserEntryId,
-        ...(compactionTrigger === "transcript_bytes" && isCodexRuntime
-          ? {
-              transcriptBytePreflightHarness: "codex" as const,
-              ...(compactionTarget.storePath &&
-              typeof activeTranscriptBytes === "number" &&
-              typeof maxActiveTranscriptBytes === "number"
-                ? {
-                    withCompactionPersistenceAsync: async (prepared) => {
-                      const committed = await persistCompactionBoundaryWithSessionEntryAsync(
-                        {
-                          ...compactionTarget,
-                          expectedLifecycleRevision: expectedSession.lifecycleRevision,
-                          expectedWriterRunId: expectedSession.activeWriterRunId,
-                          sessionId: expectedSession.sessionId,
-                        },
-                        {
-                          prepared,
-                          transcriptByteCompactionLatch: {
-                            activeBytes: activeTranscriptBytes,
-                            sessionId: expectedSession.sessionId,
-                            maxBytes: maxActiveTranscriptBytes,
-                          },
-                        },
-                        assertActive,
-                      );
-                      hostAccountingCommitted = true;
-                      return committed;
-                    },
-                  }
-                : {}),
-              onHostCompactionTranscriptSettled: async (commit) => {
-                await recordCompactionAccounting(commit.entry, undefined, undefined, 0);
-              },
-            }
-          : {}),
         // Record every host compaction while its session lane still excludes the next writer.
         onHostCompactionCommitted: async (commit) => {
           await recordCompactionAccounting(
@@ -695,7 +648,7 @@ export async function runMemoryFlushIfNeeded(params: {
   const shouldReadTranscriptForOutput =
     entry &&
     hasFreshPersistedPromptTokens &&
-    typeof promptTokenEstimate === "number" &&
+    promptTokenEstimate !== undefined &&
     flushThreshold > 0 &&
     persistedPromptTokens + promptTokenEstimate >=
       flushThreshold - TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS;
@@ -720,7 +673,7 @@ export async function runMemoryFlushIfNeeded(params: {
   assertMemoryFlushCurrent();
   const transcriptByteSize = sessionLogSnapshot?.byteSize;
   const shouldForceFlushByTranscriptSize =
-    typeof transcriptByteSize === "number" && transcriptByteSize >= forceFlushTranscriptBytes;
+    transcriptByteSize !== undefined && transcriptByteSize >= forceFlushTranscriptBytes;
 
   const transcriptUsageTokens =
     shouldReadTranscript && entry

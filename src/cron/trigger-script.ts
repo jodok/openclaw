@@ -75,7 +75,10 @@ import {
 } from "./isolated-agent/run-config.js";
 import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import { prepareCronRunAdmission } from "./run-admission.js";
-import { resolveCronScheduledToolPolicy } from "./scheduled-tool-policy.js";
+import {
+  resolveCronScheduledToolPolicy,
+  type CronScheduledToolCallerOrigin,
+} from "./scheduled-tool-policy.js";
 import {
   DEFAULT_CRON_SCRIPT_TIMEOUT_SECONDS,
   DEFAULT_CRON_SCRIPT_TOOL_BUDGET,
@@ -142,6 +145,7 @@ type PrepareTriggerRuntime = (params: {
   agentId?: string;
   toolsAllow?: string[];
   scheduledToolPolicy?: ScheduledToolPolicyContext;
+  callerOrigin?: CronScheduledToolCallerOrigin;
   execTarget?: CronToolsAllowExecTarget;
   creatorSandbox?: "required";
   creatorProfileId?: string;
@@ -261,6 +265,7 @@ async function prepareTriggerRuntime(
       const scheduledToolPolicy = resolveScheduledToolPolicyContext({
         toolsAllow: params.toolsAllow,
         scheduledToolPolicy: params.scheduledToolPolicy,
+        callerOrigin: params.callerOrigin,
         execTarget: params.execTarget,
       });
       // Core and MCP tools of one evaluation share one policy owner, like embedded runs.
@@ -419,6 +424,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
     const toolsAllowKey = JSON.stringify([
       request.toolsAllow ?? null,
       request.scheduledToolPolicy ?? null,
+      request.callerOrigin ?? null,
       request.execTarget ?? null,
       request.creatorSandbox ?? null,
       request.creatorProfileId ?? null,
@@ -523,6 +529,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
           owner: params.job.owner,
         }),
         execTarget: params.job.toolsAllowExecTarget,
+        callerOrigin: params.job.toolsAllowProvenance?.callerOrigin,
       };
       const retained = await resolveCachedRuntime(request, evaluationScope);
       const runtime = retained.runtime;
