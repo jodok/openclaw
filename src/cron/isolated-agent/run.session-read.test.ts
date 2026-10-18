@@ -277,11 +277,17 @@ describe("cron session preparation", () => {
           createdActor: { type: "human", source: "channel", id: "U-HISTORICAL-PERSON" },
         });
       } else {
+        const result = await run;
+        expect(result).toMatchObject({
+          status: "error",
+          admissionDisposition: "rejected",
+          executionStarted: false,
+          error: expect.stringContaining(
+            change === "profile-role" ? "Retry the run" : "cron.reauthorizeChannelRequester",
+          ),
+        });
         if (change === "profile-role") {
-          await expect(run).rejects.toThrow("Retry the run");
-          await expect(run).rejects.not.toThrow("cron.reauthorizeChannelRequester");
-        } else {
-          await expect(run).rejects.toThrow("cron.reauthorizeChannelRequester");
+          expect(result.error).not.toContain("cron.reauthorizeChannelRequester");
         }
         expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
         expect(
