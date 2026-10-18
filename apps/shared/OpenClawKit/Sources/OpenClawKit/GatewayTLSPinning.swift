@@ -433,6 +433,29 @@ public enum GatewayTLSStore {
         return [current] + alternates
     }
 
+    public struct ApprovalSnapshot: Sendable {
+        fileprivate let fingerprint: String?
+        fileprivate let alternates: [String]
+    }
+
+    /// Capture the whole approval record before a setup import resets it.
+    public static func snapshot(stableID: String) -> ApprovalSnapshot? {
+        switch self.loadFingerprintResult(stableID: stableID) {
+        case .missing: ApprovalSnapshot(fingerprint: nil, alternates: [])
+        case let .value(current, alternates): ApprovalSnapshot(fingerprint: current, alternates: alternates)
+        case .unavailable: nil
+        }
+    }
+
+    @discardableResult
+    public static func restore(_ snapshot: ApprovalSnapshot, stableID: String) -> Bool {
+        guard let fingerprint = snapshot.fingerprint else { return self.clearFingerprint(stableID: stableID) }
+        guard self.writeCanonicalFingerprint(
+            fingerprint, stableID: stableID, approvedAlternates: snapshot.alternates)
+        else { return false }
+        return self.clearSafeLegacyFingerprint(stableID: stableID)
+    }
+
     @discardableResult
     public static func clearFingerprint(stableID: String) -> Bool {
         guard let account = self.keychainAccount(stableID: stableID) else { return false }
@@ -545,14 +568,17 @@ public enum GatewayTLSStore {
         return .value(fingerprint, approvedAlternates: [])
     }
 
-    private static func writeCanonicalFingerprint(_ value: String, stableID: String) -> Bool {
+    private static func writeCanonicalFingerprint(
+        _ value: String, stableID: String, approvedAlternates: [String] = []) -> Bool
+    {
         guard let account = self.keychainAccount(stableID: stableID) else { return false }
         let data = Data(self.canonicalStoredFingerprint(value).utf8)
         let query = self.fingerprintQuery(account: account)
         let updates: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrGeneric as String: data,
-            kSecAttrComment as String: "",
+            kSecAttrComment as String: approvedAlternates.isEmpty
+                ? "" : ([self.canonicalStoredFingerprint(value)] + approvedAlternates).joined(separator: "\n"),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let updateStatus = self.keychainOperations.update(query as CFDictionary, updates as CFDictionary)
@@ -560,18 +586,22 @@ public enum GatewayTLSStore {
             return true
         }
         guard updateStatus == errSecItemNotFound else { return false }
-        return self.createCanonicalFingerprintIfAbsent(value, account: account) != nil
+        return self.createCanonicalFingerprintIfAbsent(
+            value, account: account, approvedAlternates: approvedAlternates) != nil
     }
 
     private static func createCanonicalFingerprintIfAbsent(
         _ value: String,
-        account: String) -> String?
+        account: String,
+        approvedAlternates: [String] = []) -> String?
     {
         let fingerprint = self.canonicalStoredFingerprint(value)
         let data = Data(fingerprint.utf8)
         var insert = self.fingerprintQuery(account: account)
         insert[kSecValueData as String] = data
         insert[kSecAttrGeneric as String] = data
+        insert[kSecAttrComment as String] = approvedAlternates.isEmpty
+            ? "" : ([fingerprint] + approvedAlternates).joined(separator: "\n")
         insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let addStatus = self.keychainOperations.add(insert as CFDictionary)
         if addStatus == errSecSuccess {

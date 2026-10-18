@@ -271,6 +271,66 @@ struct GatewayTLSPinningTests {
         #expect(session.consumeLastTLSFailure()?.kind == .pinMismatch)
     }
 
+    @Test(arguments: [false, true])
+    func `setup rollback restores every approved leaf even for the same scalar`(sameScalar: Bool) throws {
+        let route = "profile:setup-rollback"
+        let first = String(repeating: "a", count: 64)
+        let current = String(repeating: "b", count: 64)
+        let imported = sameScalar ? current : String(repeating: "c", count: 64)
+        try #require(GatewayTLSStore.replaceFingerprint(first, stableID: route))
+        try #require(GatewayTLSStore.approveFingerprint(current, ifCurrent: first, stableID: route))
+        let snapshot = try #require(GatewayTLSStore.snapshot(stableID: route))
+
+        try #require(GatewayTLSStore.replaceFingerprint(imported, stableID: route))
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route) == [imported])
+        try #require(GatewayTLSStore.restore(snapshot, stableID: route))
+
+        #expect(GatewayTLSStore.loadFingerprint(stableID: route) == current)
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route) == [current, first])
+        // Restored approval remains usable by the durable CAS owner.
+        #expect(GatewayTLSStore.approveFingerprint(first, ifCurrent: current, stableID: route))
+    }
+
+    @Test func `setup rollback restores approvals after canonical update succeeds but legacy deletion fails`() throws {
+        let route = "profile:partial-setup-rollback"
+        let first = String(repeating: "a", count: 64)
+        let current = String(repeating: "b", count: 64)
+        let imported = String(repeating: "c", count: 64)
+        try #require(GatewayTLSStore.replaceFingerprint(first, stableID: route))
+        try #require(GatewayTLSStore.approveFingerprint(current, ifCurrent: first, stableID: route))
+        let snapshot = try #require(GatewayTLSStore.snapshot(stableID: route))
+        let storage = GatewayTLSStore.keychainOperations
+        let failingCleanup = GatewayTLSKeychainOperations(
+            copyMatching: storage.copyMatching,
+            add: storage.add,
+            update: storage.update,
+            delete: { query in
+                let attributes = query as NSDictionary
+                if attributes[kSecAttrAccount as String] as? String == route {
+                    return errSecInteractionNotAllowed
+                }
+                return storage.delete(query)
+            })
+
+        GatewayTLSStore.$keychainOperations.withValue(failingCleanup) {
+            #expect(!GatewayTLSStore.replaceFingerprint(imported, stableID: route))
+        }
+        // A failed result does not mean the canonical record was left untouched.
+        #expect(GatewayTLSStore.loadFingerprint(stableID: route) == imported)
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route) == [imported])
+        try #require(GatewayTLSStore.restore(snapshot, stableID: route))
+        #expect(GatewayTLSStore.loadFingerprint(stableID: route) == current)
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route) == [current, first])
+    }
+
+    @Test func `setup rollback restores absence of prior trust`() throws {
+        let route = "profile:empty-setup-rollback"
+        let snapshot = try #require(GatewayTLSStore.snapshot(stableID: route))
+        try #require(GatewayTLSStore.replaceFingerprint("setup-pin", stableID: route))
+        try #require(GatewayTLSStore.restore(snapshot, stableID: route))
+        #expect(GatewayTLSStore.approvedFingerprints(stableID: route) == nil)
+    }
+
     @Test func `approved leaves are bounded and retired by forget or older-client writes`() throws {
         let route = "profile:bounded"
         let leaves = (0..<6).map { String(repeating: String($0), count: 64) }
