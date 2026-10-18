@@ -166,12 +166,15 @@ describe("cron session preparation", () => {
   });
 
   it.each(["unchanged", "revoked", "relinked", "role", "config", "profile-role"] as const)(
-    "checks creator authority at runner launch after awaited preparation: %s",
+    "checks creator authority before session persistence and runner launch: %s",
     async (change) => {
       resetRunCronIsolatedAgentTurnHarness();
       mockRunCronFallbackPassthrough();
       vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-cron-launch-authority-"));
       const database = openOpenClawAgentDatabase({ agentId: "main", env: process.env });
+      resolveCronSessionMock.mockImplementation(actualSession.prepareCronSession);
+      loadSessionEntryMock.mockImplementation(actualSession.loadCronSessionEntryLatest);
+      patchSessionEntryMock.mockImplementation(actualAccessor.patchSessionEntryCore);
       const profile = ensureProfileForEmail("requester@example.test");
       const identity = { channelId: "slack", accountId: "default", senderId: "U-REQUESTER" };
       if (change !== "profile-role") {
@@ -209,7 +212,7 @@ describe("cron session preparation", () => {
         return { dir: "/tmp/workspace" };
       });
       const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
-      const result = await runCronIsolatedAgentTurn(
+      const run = runCronIsolatedAgentTurn(
         makeIsolatedAgentParamsFixture({
           agentId: "main",
           cfg: {
@@ -222,7 +225,7 @@ describe("cron session preparation", () => {
                     sessions: { others: "none" },
                     agents: "*",
                     scopes: [],
-                    sandbox: "required",
+                    sandbox: change === "unchanged" ? "required" : undefined,
                   },
                   restricted: {
                     sessions: { others: "none" },
@@ -266,6 +269,7 @@ describe("cron session preparation", () => {
         }),
       );
       if (change === "unchanged") {
+        const result = await run;
         expect(result.status).toBe("ok");
         expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
         expect(runEmbeddedAgentMock.mock.calls[0]?.[0].execSession).toMatchObject({
@@ -273,14 +277,19 @@ describe("cron session preparation", () => {
           createdActor: { type: "human", source: "channel", id: "U-HISTORICAL-PERSON" },
         });
       } else {
-        expect(result.status).toBe("error");
         if (change === "profile-role") {
-          expect(result.error).toContain("Retry");
-          expect(result.error).not.toContain("cron.reauthorizeChannelRequester");
+          await expect(run).rejects.toThrow("Retry the run");
+          await expect(run).rejects.not.toThrow("cron.reauthorizeChannelRequester");
         } else {
-          expect(result.error).toContain("cron.reauthorizeChannelRequester");
+          await expect(run).rejects.toThrow("cron.reauthorizeChannelRequester");
         }
         expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+        expect(
+          actualAccessor.loadSessionEntry({
+            storePath: database.path,
+            sessionKey: "agent:main:cron:test",
+          }),
+        ).toBeUndefined();
       }
     },
   );

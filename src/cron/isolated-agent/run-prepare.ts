@@ -261,10 +261,15 @@ export async function prepareCronRunContext(params: {
       }) => {
         const { applySessionEntryLifecycleMutation, patchSessionEntryCore } =
           await loadSessionAccessorRuntime();
+        const assertWriteCurrent = () => {
+          assertCreatorCurrent();
+          assertCommitAllowed?.();
+        };
         if (resetBoundary) {
           await applySessionEntryLifecycleMutation({
             activeSessionKey: sessionKey,
             agentId,
+            commitGuard: assertWriteCurrent,
             storePath,
             upserts: [
               {
@@ -286,7 +291,7 @@ export async function prepareCronRunContext(params: {
             replaceEntry: true,
             // The maintenance owner follows later writes through its receipt subscription.
             skipMaintenance: baseSessionMaintenanceStarted || sessionKey !== agentSessionKey,
-            workerGuard: { assertCurrent: assertCommitAllowed },
+            workerGuard: { assertCurrent: assertWriteCurrent },
           },
         );
         if (sessionKey === agentSessionKey) {
