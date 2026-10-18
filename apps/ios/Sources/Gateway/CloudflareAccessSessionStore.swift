@@ -105,6 +105,17 @@ final class CloudflareAccessSessionStore {
         return self.states[origin]?.phase ?? .signedOut
     }
 
+    /// Saved account ownership includes expired/revoked grants and never authorizes traffic.
+    func hasAccount(for origin: CloudflareAccessOrigin) -> Bool {
+        _ = self.revision
+        do {
+            try self.restore(origin, now: self.now())
+        } catch {
+            return false
+        }
+        return self.bindings[origin] != nil
+    }
+
     func snapshot(for origin: CloudflareAccessOrigin, now: Date? = nil) -> Snapshot? {
         let now = now ?? self.now()
         _ = self.revision

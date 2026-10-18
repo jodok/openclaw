@@ -389,6 +389,44 @@ extension GatewayIngressControllerTests {
         #expect(fixture.browser.presented.isEmpty)
     }
 
+    @Test(arguments: [false, true]) @MainActor
+    func `Settings can sign out expired and revoked accounts after restart`(expired: Bool) async throws {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        let app = fixture.application
+        let original = fixture.nextSession
+        let writer = CloudflareAccessSessionStore(
+            persistence: storage.persistence, authenticate: { _, _ in original },
+            now: { fixture.now }, retireTransports: { _ in })
+        let admitted = try await writer.signIn(application: app, openBrowser: { _ in }).value
+        if expired {
+            fixture.now = original.expiresAt
+            #expect(writer.snapshot(for: app.origin) == nil)
+            try await writer.waitForRetirement(of: app.origin)
+        } else {
+            try await writer.requireReauthentication(for: app.origin, revision: admitted.revision)
+        }
+        fixture.profileRows[0].accessOrigin = app.origin
+        let ingress = fixture.controller(persistence: storage.persistence)
+        let registry = GatewaySettingsStore.GatewayRegistry(
+            activeStableID: fixture.stableID, entries: fixture.profileRows)
+        #expect(!ingress.hasSession(stableID: fixture.stableID))
+        let target = try #require(SettingsProTab.gatewayAccessSessionTarget(in: registry, ingress: ingress))
+        #expect(target.origin == app.origin)
+        #expect(!ingress.hasSession(stableID: fixture.stableID))
+        await ingress.signOut(stableID: target.stableID, expectedOrigin: target.origin)
+        #expect(SettingsProTab.gatewayAccessSessionTarget(in: registry, ingress: ingress) == nil)
+        #expect(storage.values[app.origin] == nil)
+        #expect(fixture.profileRows.count == 1)
+        let replacement = try fixture.session(
+            for: app, subject: "replacement-account", expires: fixture.now.addingTimeInterval(3600))
+        let restarted = CloudflareAccessSessionStore(
+            persistence: storage.persistence, authenticate: { _, _ in replacement },
+            now: { fixture.now }, retireTransports: { _ in })
+        let changed = try await restarted.signIn(application: app, openBrowser: { _ in }).value
+        #expect(changed.session.subject == "replacement-account")
+    }
+
     @Test @MainActor
     func `a stale displayed Access origin cannot sign out its profile replacement`() async throws {
         let fixture = try IngressTestHarness()
