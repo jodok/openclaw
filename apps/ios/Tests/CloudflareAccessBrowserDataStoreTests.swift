@@ -7,9 +7,9 @@ import UIKit
 @MainActor
 struct CloudflareAccessBrowserDataStoreTests {
     @Test(.timeLimit(.minutes(1)))
-    func `real Safari website reset preserves a saved native Keychain grant`() async throws {
-        // Exercise Apple's real clearing API without authenticating to any external website.
-        // This proves storage separation, not that a third-party IdP presents an account picker.
+    func `account switch with injected website reset preserves a saved native Keychain grant`() async throws {
+        // The hosted app shares Safari storage with existing sessions; never clear it in routine tests.
+        // This covers native grant preservation, not Apple's storage separation or IdP account selection.
         let seed = try CloudflareAccessTestTokens().session()
         let token = try #require(seed.authorizationHeader(for: seed.origin.url))
         let identifier = UUID().uuidString.lowercased()
@@ -37,16 +37,18 @@ struct CloudflareAccessBrowserDataStoreTests {
         retired.removeAll()
 
         var prompts: [UIAlertController] = []
+        var resets = 0
         let website = AsyncStream<Void>.makeStream()
-        // Deliberately omit clearWebsiteData: this invokes the supported default Apple API.
         let presenter = CloudflareAccessBrowserPresenter(
             present: { _ in
+                #expect(resets == 1)
                 website.continuation.yield(())
                 website.continuation.finish()
             },
             dismiss: { _ in },
             presentPrompt: { prompts.append($0) },
-            dismissPrompt: { _ in })
+            dismissPrompt: { _ in },
+            clearWebsiteData: { resets += 1 })
         let nextOrigin = try CloudflareAccessOrigin(
             #require(URL(string: "https://next-\(identifier).example.test")))
         let id = UUID()
@@ -54,12 +56,11 @@ struct CloudflareAccessBrowserDataStoreTests {
         defer { preparing.cancel() }
         try await waitForIngress { prompts.count == 1 }
         presenter.continuePreparation(from: prompts[0], clearWebsiteData: true)
-        // Wait for the actual system completion, not the short mock-ingress polling deadline.
         var websiteEvents = website.stream.makeAsyncIterator()
         let opened = await websiteEvents.next()
         try #require(opened != nil)
 
-        // Presentation can occur only after Apple's awaited clearing callback finishes.
+        #expect(resets == 1)
         let bytesAfterReset = GenericPasswordKeychainStore.loadString(service: service, account: account)
         #expect(bytesAfterReset == savedBytes)
         #expect(writer.snapshot(for: savedOrigin)?.revision == original.revision)
