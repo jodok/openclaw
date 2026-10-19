@@ -48,7 +48,7 @@ final class CloudflareAccessSessionStore {
         }
     }
 
-    // One atomic Keychain row keeps the expected principal after the grant is retired.
+    /// One atomic Keychain row keeps the expected principal after the grant is retired.
     private struct SavedAccount: Codable {
         let binding: Binding
         let session: CloudflareAccessSession?
