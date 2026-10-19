@@ -37,5 +37,11 @@ export function operatorReadShareKey(...[caller, params]: Parameters<ShareKey>):
 export const cronListShareKey: ShareKey = (caller, params) =>
   caller.read?.shareable === true ? operatorReadShareKey(caller, params) : null;
 
+export const CRON_LIST_READ_POLICY = {
+  shareKey: cronListShareKey,
+  shareMaxAgeMs: 1_000,
+  shareInvalidationEvents: ["cron", "sessions.changed"],
+} as const;
+
 export const modelsListShareKey: ShareKey = (caller, params) =>
   params.refresh === true ? null : operatorReadShareKey(caller, params);

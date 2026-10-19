@@ -212,6 +212,7 @@ export function createCronPromptExecutor(
           });
     pendingUserTurn = { promptText, recorder: userTurnTranscriptRecorder };
     const cronAdmission = prepareCronRunAdmission({
+      operatorAuthority: params.operatorAuthority,
       admissionSource: params.admissionSource,
       assertSourceCurrent: params.assertCreatorCurrent,
       deliveryAttemptFence: params.deliveryAttemptFence,
@@ -378,7 +379,12 @@ export function createCronPromptExecutor(
         });
         if (binding && (providerOverride !== binding.provider || cliExecution)) {
           throw new Error(
-            "Automation candidate is incompatible with its recorded inference account and route.",
+            "Automation candidate is incompatible with its recorded inference account and route. " +
+              (cliExecution
+                ? "The selected runtime uses a CLI login, which cannot replace this job's stored account. "
+                : "The selected model uses a different provider from this job's stored account. ") +
+              "Select a model compatible with the recorded account, or explicitly select a stored account with " +
+              "openclaw automations edit <jobId> --model <provider/model>@<profileId> using a host-managed runtime.",
           );
         }
         params.assertCreatorCurrent();
@@ -468,6 +474,7 @@ export function createCronPromptExecutor(
             extraSystemPrompt: params.deliverySystemPrompt,
             sourceReplyDeliveryMode: sourceDelivery.sourceReplyDeliveryMode,
             requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
+            messageToolFinalByDefault: sourceDelivery.messageTool.finalByDefault,
             scheduledToolPolicy,
             onExecutionStarted: notifyExecutionStarted,
             onExecutionPhase: notifyExecutionPhase,
@@ -565,11 +572,7 @@ export function createCronPromptExecutor(
                   nativeAuthOnly: trigger === "cron" && !binding ? true : undefined,
                   cliSessionId: cliSessionBinding?.sessionId,
                   cliSessionBinding: guardedCliSessionBinding,
-                  cliSessionBindingFacts: {
-                    extraSystemPromptStatic: params.deliverySystemPrompt,
-                    sourceReplyDeliveryMode: sourceDelivery.sourceReplyDeliveryMode,
-                    requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
-                  },
+                  cliSessionBindingFacts: params.cliSessionBindingFacts,
                   toolsAllow: resolveCliRuntimeToolsAllow(params.agentPayload?.toolsAllow),
                   abortSignal: cliAbortSignal,
                 });

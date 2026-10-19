@@ -42,7 +42,7 @@ const actualAccessor = await vi.importActual<
   typeof import("../../config/sessions/session-accessor.js")
 >("../../config/sessions/session-accessor.js");
 const { prepareCronRunContext } = await import("./run-prepare.js");
-const { beginCronSessionWorkAdmission } = await import("./run-session-state.js");
+const { beginCronPreparationEffect } = await import("./run-session-state.js");
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
     await closeOpenClawAgentDatabasesAsync();
@@ -353,7 +353,7 @@ describe("cron session preparation", () => {
           );
         },
       );
-      const admission = beginCronSessionWorkAdmission({
+      const admission = beginCronPreparationEffect({
         agentId: "main",
         cronSession,
         agentSessionKey: sessionKey,
@@ -446,7 +446,7 @@ describe("cron session preparation", () => {
       });
       expect(result.context.cronSession.sessionEntry.totalTokens).toBe(25);
     } finally {
-      result.context.sessionWorkAdmission.release();
+      result.context.sessionPreparationEffect.release();
       await result.context.workspaceLease?.release();
     }
   });

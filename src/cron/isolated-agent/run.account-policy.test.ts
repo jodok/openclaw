@@ -13,6 +13,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createScheduledGatewayRunner } from "../../gateway/scheduled-run-gateway-context.js";
 import { withOperatorToolGatewayAuthority } from "../../gateway/server-plugin-in-process-dispatch.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -34,8 +35,10 @@ import type { CronStoredJob } from "../types.js";
 import {
   getChannelPluginMock,
   loadRunCronIsolatedAgentTurn,
+  makeCronSession,
   mockRunCronFallbackPassthrough,
   resetRunCronIsolatedAgentTurnHarness,
+  resolveCronSessionMock,
   runEmbeddedAgentMock,
 } from "./run.test-harness.js";
 
@@ -123,8 +126,17 @@ describe("scheduled account policy outcomes", () => {
           senderId: "sender",
         });
       }
-      const cfg: OpenClawConfig = { channels: { whatsapp: { accounts: { work: {} } } } };
+      const sessionRoot = path.join(
+        path.dirname(storePath),
+        path.basename(storePath, ".jobs.json"),
+      );
+      const sessionStorePath = path.join(sessionRoot, "sessions.json");
+      const cfg: OpenClawConfig = {
+        session: { store: sessionStorePath },
+        channels: { whatsapp: { accounts: { work: {} } } },
+      };
       setRuntimeConfigSnapshot(cfg);
+      resolveCronSessionMock.mockReturnValue(makeCronSession({ storePath: sessionStorePath }));
       const job: CronStoredJob = {
         ...createDueIsolatedJob({
           id: name.replaceAll(" ", "-"),
@@ -243,6 +255,8 @@ describe("scheduled account policy outcomes", () => {
       } finally {
         continuePayload.resolve();
         stop(state);
+        await state.schedulerDrain;
+        await closeOpenClawAgentDatabasesAsync(sessionRoot);
       }
     },
   );
