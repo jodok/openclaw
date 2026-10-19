@@ -728,12 +728,13 @@ def repo_root
 end
 module Open3
   def self.capture3(command, *args)
+    return ["1", "", Struct.new(:success?).new(true)] if command == "/usr/sbin/sysctl" && args == ["-n", "hw.optional.arm64"]
     if command == "xcrun" && args == ["simctl", "list", "--json"]
       inventory = {
         "runtimes" => [],
         "devicetypes" => [{ "name" => "Apple Watch Ultra 3 (49mm)", "identifier" => "watch-type", "minRuntimeVersion" => 26 << 16 }]
       }
-      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => [RbConfig::CONFIG.fetch("host_cpu")] }] : []
+      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => ["arm64", "x86_64"] }] : []
       return [JSON.generate(inventory), "", Struct.new(:success?).new(true)]
     end
     raise "unexpected external command: #{command}" unless command == "/usr/libexec/PlistBuddy"
@@ -926,6 +927,7 @@ alias private_lane lane
 load ARGV.fetch(0)
 module Open3
   def self.capture3(*args)
+    return ["1", "", Struct.new(:success?).new(true)] if args == ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"]
     raise "unexpected command: #{args}" unless args == ["xcrun", "simctl", "list", "--json"]
     $inventory_reads += 1
     [JSON.generate($inventory), "", Struct.new(:success?).new(true)]
@@ -937,7 +939,7 @@ type_id = "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Ultra-3-49mm"
 name = "Apple Watch Ultra 3 (49mm)"
 template = { "name" => name, "deviceTypeIdentifier" => type_id, "runtime" => runtime_id }
 type = { "name" => name, "identifier" => type_id, "minRuntimeVersion" => 26 << 16, "maxRuntimeVersion" => 0xFFFFFFFF }
-runtime = { "identifier" => runtime_id, "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => [RbConfig::CONFIG.fetch("host_cpu")] }
+runtime = { "identifier" => runtime_id, "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => ["arm64", "x86_64"] }
 $inventory_reads = 0
 $devices = [template.merge("udid" => "existing")]
 raise "exact device lost" unless resolve_simulator_device(name).fetch("udid") == "existing"
@@ -1041,12 +1043,13 @@ module Open3
     raise Errno::ENOENT
   end
   def self.capture3(command, *args)
+    return ["1", "", Struct.new(:success?).new(true)] if command == "/usr/sbin/sysctl" && args == ["-n", "hw.optional.arm64"]
     if command == "xcrun" && args == ["simctl", "list", "--json"]
       inventory = {
         "runtimes" => [],
         "devicetypes" => [{ "name" => "Apple Watch Ultra 3 (49mm)", "identifier" => "watch-type", "minRuntimeVersion" => 26 << 16 }]
       }
-      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => [RbConfig::CONFIG.fetch("host_cpu")] }] : []
+      inventory["runtimes"] = $watch_runtime_available ? [{ "identifier" => "com.apple.CoreSimulator.SimRuntime.watchOS-27-0", "version" => "27.0", "isAvailable" => true, "supportedArchitectures" => ["arm64", "x86_64"] }] : []
       return [JSON.generate(inventory), "", Struct.new(:success?).new(true)]
     end
     raise "unexpected external command: #{command}" unless command == "/usr/libexec/PlistBuddy"
