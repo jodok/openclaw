@@ -1,12 +1,17 @@
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createOpenClawCodingTools } from "../../agents/agent-tools.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { clearCronJobActive, markCronJobActive } from "../../cron/active-jobs.js";
 import { resolveCronJobConfigRevision } from "../../cron/config-revision.js";
+import { resolveCronCreatorSandbox } from "../../cron/creator-sandbox.js";
 import { CronService } from "../../cron/service.js";
 import { createNoopLogger } from "../../cron/service.test-harness.js";
+import { registerActiveCronTaskRun } from "../../cron/service/active-run-cancellation.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { changeCanonicalUserChannelIdentity } from "../../state/user-channel-identity-operations.js";
 import { setCanonicalUserProfileRole } from "../../state/user-profile-writes.js";
@@ -123,6 +128,88 @@ async function fixture(
 }
 
 describe("cron.reauthorizeChannelRequester production mutation", () => {
+  it("closes nonmessage tool admission only after a requester rebind commits", async () => {
+    const f = await fixture({
+      toolsAllowProvenance: {
+        version: 1,
+        source: "authenticated-requester",
+        callerOrigin: { kind: "external", channel: "discord" },
+        channelRequester: {
+          version: 1,
+          channel: "discord",
+          accountId: "work",
+          senderId: "sender-a",
+        },
+      },
+    });
+    const a = ensureProfileForEmail("requester-a@example.test");
+    await changeCanonicalUserChannelIdentity("link", a.id, { ...f.identity, senderId: "sender-a" });
+    f.cfg.gateway = {
+      roles: {
+        default: "unrestricted",
+        definitions: {
+          unrestricted: { sessions: { others: "none" }, agents: "*", scopes: [] },
+          isolated: { sessions: { others: "none" }, agents: "*", scopes: [], sandbox: "required" },
+        },
+      },
+    };
+    await setCanonicalUserProfileRole(f.profile.id, "isolated");
+    const creator = await resolveCronCreatorSandbox(f.cfg, f.job);
+    expect(creator.sandbox).toBeUndefined();
+    const marker = markCronJobActive(f.job.id);
+    const controller = new AbortController();
+    const release = registerActiveCronTaskRun({
+      runId: "reauthorize-active",
+      controller,
+      activeJobMarker: marker,
+    });
+    try {
+      const tools = createOpenClawCodingTools({
+        config: f.cfg,
+        agentId: "main",
+        workspaceDir: stateDir!,
+        cwd: stateDir!,
+        abortSignal: controller.signal,
+        toolConstructionPlan: {
+          includeBaseCodingTools: true,
+          includeShellTools: false,
+          includeChannelTools: false,
+          includeOpenClawTools: false,
+          includePluginTools: false,
+        },
+      });
+      const read = tools.find((tool) => tool.name === "read")!;
+      expect(read).toBeDefined();
+      const target = path.join(stateDir!, "admission-proof.txt");
+      await writeFile(target, "synthetic authority proof");
+      // A failed real commit must leave the admitted run and its stored job intact.
+      const rejected = await f.invoke({}, () => {
+        throw new Error("Reject transaction");
+      });
+      expect(rejected.mock.calls[0]?.[0]).toBe(false);
+      expect(await f.service.readJob(f.job.id)).toEqual(f.job);
+      expect(controller.signal.aborted).toBe(false);
+      await expect(read.execute("retained-read", { path: target })).resolves.toMatchObject({
+        content: [{ type: "text", text: "synthetic authority proof" }],
+      });
+      await f.service.update(f.job.id, { description: "Unrelated metadata" });
+      expect(controller.signal.aborted).toBe(false);
+      const current = (await f.service.readJob(f.job.id))!;
+      const accepted = await f.invoke({
+        expectedConfigRevision: resolveCronJobConfigRevision(current),
+      });
+      expect(accepted.mock.calls[0]?.[0]).toBe(true);
+      const rebound = (await f.service.readJob(f.job.id))!;
+      expect((await resolveCronCreatorSandbox(f.cfg, rebound)).sandbox).toBe("required");
+      // A remains linked and its captured role guard still passes: cancellation owns the cutover.
+      creator.assertCurrent();
+      await expect(read.execute("old-sandbox-read", { path: target })).rejects.toThrow(/abort/i);
+    } finally {
+      release?.();
+      clearCronJobActive(f.job.id, marker);
+    }
+  });
+
   it("binds the verified requester while preserving the original definition and creator history", async () => {
     const f = await fixture();
     const respond = await f.invoke();
