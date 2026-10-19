@@ -43,5 +43,11 @@ export const CRON_LIST_READ_POLICY = {
   shareInvalidationEvents: ["cron", "sessions.changed"],
 } as const;
 
+export const CRON_STATUS_READ_POLICY = {
+  shareKey: operatorReadShareKey,
+  shareMaxAgeMs: 1_000,
+  shareInvalidationEvents: ["cron"],
+} as const;
+
 export const modelsListShareKey: ShareKey = (caller, params) =>
   params.refresh === true ? null : operatorReadShareKey(caller, params);
