@@ -231,8 +231,12 @@ def watch_simulator_template(name)
   stdout, stderr, status = Open3.capture3("xcrun", "simctl", "list", "--json")
   UI.user_error!("Failed to list simulator runtimes and device types: #{stderr.to_s.strip}") unless status.success?
   inventory = JSON.parse(stdout).slice("runtimes", "devicetypes")
+  # Query hardware, not Ruby’s build architecture (Intel Ruby may run under Rosetta).
+  arm64, _, arm64_status = Open3.capture3("/usr/sbin/sysctl", "-n", "hw.optional.arm64")
+  host_architecture = arm64_status.success? && arm64.strip == "1" ? "arm64" : "x86_64"
   runtimes = inventory.fetch("runtimes").select do |runtime|
-    runtime.fetch("identifier").start_with?("com.apple.CoreSimulator.SimRuntime.watchOS-") && runtime["isAvailable"] == true
+    runtime.fetch("identifier").start_with?("com.apple.CoreSimulator.SimRuntime.watchOS-") && runtime["isAvailable"] == true &&
+      runtime.fetch("supportedArchitectures", []).include?(host_architecture)
   end.sort_by { |runtime| Gem::Version.new(runtime.fetch("version")) }.reverse
   types = inventory.fetch("devicetypes").select { |type| type.fetch("name").start_with?("Apple Watch") }
   types = types.sort_by { |type| [type.fetch("name") == name ? 0 : 1, type.fetch("name").include?("Ultra") ? 0 : 1] }
