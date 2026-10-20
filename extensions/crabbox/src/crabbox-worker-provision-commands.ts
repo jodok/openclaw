@@ -109,17 +109,21 @@ export async function inspectWithContext(
     let inspect: ParsedInspect;
     try {
       inspect = parseInspectJson(result.stdout);
+      if (inspect.id !== params.id) {
+        throw new Error("Crabbox inspect returned a different lease id");
+      }
       const notice = sanitizeCrabboxNotice(result.stderr);
       if (notice) {
         inspect.lifetime = { ...inspect.lifetime, policyNotice: notice };
       }
     } catch (error) {
-      throw new WorkerProviderError(
+      // A successful response without a valid private attestation must retire
+      // existing admission, unlike a failed command or transport observation.
+      const InspectError =
+        params.network === "tailscale" ? CrabboxWorkerNetworkPolicyError : WorkerProviderError;
+      throw new InspectError(
         error instanceof Error ? error.message : "Crabbox inspect returned invalid output",
       );
-    }
-    if (inspect.id !== params.id) {
-      throw new WorkerProviderError("Crabbox inspect returned a different lease id");
     }
     assertWorkerNetworkPolicy({ inspect, provider: params.provider, network: params.network });
     return inspect;
