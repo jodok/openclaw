@@ -162,6 +162,7 @@ export function createCrabboxWorkerProvider(
         id: lease.leaseId,
         idleTimeout: profile.idleTimeout,
         provider: profile.provider,
+        network: profile.network,
       },
       profile,
     };
@@ -233,7 +234,10 @@ export function createCrabboxWorkerProvider(
         ? CRABBOX_PROJECT_PREPARATION_TIMEOUT_MS +
           resolveCrabboxWarmImageCaptureTimeoutMs(parsed.provider)
         : 0);
-    const context = warmImages.startContext(binary, parsed.provider, options, Boolean(project));
+    const context = {
+      ...warmImages.startContext(binary, parsed.provider, options, Boolean(project)),
+      network: parsed.network,
+    };
     const leaseId = allocation.leaseId;
     if (parsed.desktop && parsed.provider === "hetzner") {
       await assertHetznerDesktopHasManagedCoordinator({ binary, signal });
@@ -295,6 +299,7 @@ export function createCrabboxWorkerProvider(
           binary,
           id: leaseId,
           provider: parsed.provider,
+          network: parsed.network,
           heartbeatIntervalMs: parsed.heartbeatIntervalMs,
           heartbeatTimeoutMs: parsed.heartbeatTimeoutMs,
           idleTimeout: parsed.idleTimeout,
