@@ -39,6 +39,7 @@ import {
 } from "./crabbox-worker-project.js";
 import { createCrabboxWorkerBinaryResolver } from "./crabbox-worker-provider-binary.js";
 import {
+  CrabboxWorkerNetworkPolicyError,
   createCrabboxProvisionAuthority,
   failProvisionAfterCleanup,
   inspectWithContext,
@@ -629,12 +630,18 @@ export function createCrabboxWorkerProvider(
       const inspected = await inspectWithContext({
         ...context,
         signal: lease.signal,
+      }).catch((error: unknown) => {
+        if (error instanceof CrabboxWorkerNetworkPolicyError) {
+          return undefined;
+        }
+        throw error;
       });
-      lease.signal?.throwIfAborted();
       if (!inspected || isNonRunnableState(inspected.state)) {
         await heartbeats.stop(context.id);
+        lease.signal?.throwIfAborted();
         return { status: "unknown" };
       }
+      lease.signal?.throwIfAborted();
       // `ready` is an SSH probe; every recognized nonterminal lease remains active.
       heartbeats.start({ ...context, lifetime: inspected.lifetime });
       return { status: "active", sharedHost: false };

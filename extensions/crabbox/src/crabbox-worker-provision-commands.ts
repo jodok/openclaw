@@ -197,6 +197,9 @@ export async function runProvisionWarmup(
   throw error;
 }
 
+// Lifecycle callers must withdraw admission for definitive policy drift, not retain stale proof.
+export class CrabboxWorkerNetworkPolicyError extends WorkerProviderError {}
+
 function assertWorkerNetworkPolicy(
   params: Pick<LeaseCommandContext, "provider" | "network"> & { inspect: ParsedInspect },
 ): void {
@@ -206,12 +209,14 @@ function assertWorkerNetworkPolicy(
       params.inspect.network !== "tailscale" ||
       !params.inspect.tailscaleReady
     ) {
-      throw new WorkerProviderError(
+      throw new CrabboxWorkerNetworkPolicyError(
         "Crabbox private worker inspect must attest ready Tailscale metadata with a valid private IPv4 and device identity",
       );
     }
   } else if (params.inspect.tailscaleEnabled || params.inspect.network === "tailscale") {
-    throw new WorkerProviderError("Crabbox cloud worker lease must not have Tailscale enabled");
+    throw new CrabboxWorkerNetworkPolicyError(
+      "Crabbox cloud worker lease must not have Tailscale enabled",
+    );
   }
 }
 

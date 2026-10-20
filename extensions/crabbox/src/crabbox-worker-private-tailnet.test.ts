@@ -10,6 +10,8 @@ import type { CrabboxCommandRunner } from "./crabbox-worker-command.js";
 import {
   active,
   commandResult,
+  catalogJson,
+  classProfile,
   createProviderFixtures,
   nodeEnrollmentFixture,
 } from "./crabbox-worker-provider.test-support.js";
@@ -37,6 +39,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
       await closeOpenClawStateDatabaseAsync();
       resetPluginStateStoreForTests();
       vi.unstubAllEnvs();
+      vi.useRealTimers();
       vi.restoreAllMocks();
       syncBuiltinESMExports();
       cleanup();
@@ -180,9 +183,9 @@ it("rejects drift on post-setup refresh and lifecycle inspect", async () => {
     provider.provision({ ...TAILNET_PROFILE, setup: "install-node" }),
   ).rejects.toMatchObject({ code: "cleanup_complete" });
   expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "run", "inspect", "stop"]);
-  await expect(provider.inspect(lifecycleLease(LEASE_ID, TAILNET_PROFILE))).rejects.toThrow(
-    "Tailscale",
-  );
+  await expect(provider.inspect(lifecycleLease(LEASE_ID, TAILNET_PROFILE))).resolves.toEqual({
+    status: "unknown",
+  });
 });
 
 it("preserves a fixed-policy conflict without allocating a replacement or switching transport", async () => {
@@ -234,4 +237,59 @@ it("preserves public-profile rejection even when the Tailscale object says disab
     message: "Crabbox cloud worker lease must not have Tailscale enabled",
   });
   expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "stop"]);
+});
+
+it("withdraws active private status and renewal on definitive drift but preserves transport uncertainty", async () => {
+  vi.useFakeTimers();
+  let mode: "ready" | "unavailable" | "drift" = "ready";
+  const { provider, calls } = recordedProvider(async (argv) => {
+    if (argv[1] === "inspect" && mode === "unavailable") {
+      return commandResult({ code: 2, stderr: "transport unavailable" });
+    }
+    return readyResult(argv, {
+      ...TAILNET_INSPECT,
+      ...(mode === "drift" ? { tailscale: { enabled: false } } : {}),
+    });
+  });
+  const lease = lifecycleLease(LEASE_ID, TAILNET_PROFILE);
+  await expect(provider.inspect(lease)).resolves.toEqual(active);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(calls.filter((argv) => argv[1] === "heartbeat")).toHaveLength(1);
+  mode = "unavailable";
+  await expect(provider.inspect(lease)).rejects.toThrow("transport unavailable");
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(calls.filter((argv) => argv[1] === "heartbeat")).toHaveLength(2);
+  mode = "drift";
+  await expect(provider.inspect(lease)).resolves.toEqual({ status: "unknown" });
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(calls.filter((argv) => argv[1] === "heartbeat")).toHaveLength(2);
+  await provider.destroy(lease);
+  expect(calls.at(-1)?.slice(1)).toEqual(["stop", "--provider", "proxmox", "--id", LEASE_ID]);
+});
+
+it("offers only Linux OS and machines for private profiles without narrowing the shared public catalog", async () => {
+  const provider = providerWithRunner(async () =>
+    commandResult({
+      stdout: catalogJson(
+        "proxmox",
+        ["linux", "windows/wsl2", "windows/normal"],
+        [
+          classProfile("standard", { vcpu: 8 }),
+          classProfile("standard", { vcpu: 4 }, { target: "windows", windowsMode: "wsl2" }),
+          classProfile("standard", { vcpu: 16 }, { target: "windows", windowsMode: "normal" }),
+        ],
+      ),
+    }),
+  );
+  const publicProfile = { ...TAILNET_PROFILE, network: "public" };
+  expect(await provider.listOperatingSystems?.(publicProfile)).toHaveLength(3);
+  expect(await provider.listMachineOptions?.(publicProfile)).toHaveLength(3);
+  expect(await provider.listOperatingSystems?.(TAILNET_PROFILE)).toEqual([
+    { id: "linux", label: "Linux", default: true },
+  ]);
+  expect(await provider.listMachineOptions?.(TAILNET_PROFILE)).toEqual([
+    { id: "standard", label: "Standard", os: "linux", cpu: 8, default: true },
+  ]);
+  expect(await provider.listOperatingSystems?.(publicProfile)).toHaveLength(3);
+  expect(await provider.listMachineOptions?.(publicProfile)).toHaveLength(3);
 });
