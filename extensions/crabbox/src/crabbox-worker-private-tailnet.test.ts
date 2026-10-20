@@ -1,4 +1,5 @@
 import { syncBuiltinESMExports } from "node:module";
+import { parseArgs } from "node:util";
 import type { WorkerProfile, WorkerProvider } from "openclaw/plugin-sdk/plugin-entry";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type { SpawnResult } from "openclaw/plugin-sdk/process-runtime";
@@ -242,7 +243,31 @@ it("preserves public-profile rejection even when the Tailscale object says disab
 it("withdraws active private status and renewal on definitive drift but preserves transport uncertainty", async () => {
   vi.useFakeTimers();
   let mode: "ready" | "unavailable" | "drift" = "ready";
+  const renewed: string[] = [];
   const { provider, calls } = recordedProvider(async (argv) => {
+    if (argv[1] === "heartbeat") {
+      // Crabbox 5278730 internal/cli/heartbeat.go: lease-owned renewal has no
+      // network flag. Strict parsing makes unsupported options fail before renewal.
+      const { values } = parseArgs({
+        args: argv.slice(2),
+        strict: true,
+        allowPositionals: false,
+        options: {
+          provider: { type: "string" },
+          id: { type: "string" },
+          "idle-timeout": { type: "string" },
+          json: { type: "boolean" },
+        },
+      });
+      expect(values).toEqual({
+        provider: "proxmox",
+        id: LEASE_ID,
+        "idle-timeout": "60m",
+        json: true,
+      });
+      renewed.push(values.id!);
+      return commandResult({ stdout: inspectJson() });
+    }
     if (argv[1] === "inspect" && mode === "unavailable") {
       return commandResult({ code: 2, stderr: "transport unavailable" });
     }
@@ -254,15 +279,16 @@ it("withdraws active private status and renewal on definitive drift but preserve
   const lease = lifecycleLease(LEASE_ID, TAILNET_PROFILE);
   await expect(provider.inspect(lease)).resolves.toEqual(active);
   await vi.advanceTimersByTimeAsync(0);
-  expect(calls.filter((argv) => argv[1] === "heartbeat")).toHaveLength(1);
+  expect(renewed).toEqual([LEASE_ID]);
   mode = "unavailable";
   await expect(provider.inspect(lease)).rejects.toThrow("transport unavailable");
   await vi.advanceTimersByTimeAsync(60_000);
-  expect(calls.filter((argv) => argv[1] === "heartbeat")).toHaveLength(2);
+  expect(renewed).toEqual([LEASE_ID, LEASE_ID]);
   mode = "drift";
   await expect(provider.inspect(lease)).resolves.toEqual({ status: "unknown" });
   await vi.advanceTimersByTimeAsync(120_000);
   expect(calls.filter((argv) => argv[1] === "heartbeat")).toHaveLength(2);
+  expect(renewed).toEqual([LEASE_ID, LEASE_ID]);
   await provider.destroy(lease);
   expect(calls.at(-1)?.slice(1)).toEqual(["stop", "--provider", "proxmox", "--id", LEASE_ID]);
 });

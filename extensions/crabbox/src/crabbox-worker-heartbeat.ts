@@ -84,7 +84,6 @@ export function createCrabboxHeartbeatManager(dependencies: { warn: (message: st
           "heartbeat",
           "--provider",
           entry.provider,
-          ...(entry.network === "tailscale" ? ["--network", "tailscale"] : []),
           "--id",
           entry.id,
           "--idle-timeout",
